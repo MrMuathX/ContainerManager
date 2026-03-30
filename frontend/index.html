@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ContainerManager</title>
+  <meta name="description" content="Docker container management dashboard with Home Assistant integration" />
+  <link rel="icon" type="image/png" href="logo.png">
+
+  <!-- xterm.js -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js" defer></script>
+
+  <!-- SheetJS for Excel export -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+
+  <!-- JSZip for client-side ZIP creation (selective backup) -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js" defer></script>
+
+  <!-- marked.js for markdown rendering in AI chat -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js" defer></script>
+
+  <!-- Monaco Editor -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.38.0/min/vs/loader.min.js"></script>
+
+  <link rel="stylesheet" href="style.css?v=6" />
+</head>
+
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">
+        <img src="logo.png" alt="Logo" width="26" height="26"
+          style="filter: drop-shadow(0 0 8px rgba(36, 150, 237, 0.4)); transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);" />
+        <span>ContainerManager</span>
+      </div>
+    </div>
+    <div class="header-stats" id="sysStats">
+      <div class="stat-pill" id="statCpu"><span class="stat-label">CPU</span><span class="stat-val">—</span></div>
+      <div class="stat-pill" id="statMem"><span class="stat-label">RAM</span><span class="stat-val">—</span></div>
+      <div class="stat-pill" id="statDisk"><span class="stat-label">Disk</span><span class="stat-val">—</span></div>
+      <div class="stat-pill" id="statContainers"><span class="stat-label">Containers</span><span
+          class="stat-val">—</span></div>
+      <div class="stat-pill" id="statMqtt"><span class="stat-label">MQTT</span><span id="mqttStatus"
+          class="stat-val status-down">Offline</span></div>
+    </div>
+    <div class="header-right">
+      <button class="btn btn-ghost" id="btnPorts" title="View taken ports">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+          <polyline points="15 3 21 3 21 9" />
+          <line x1="10" y1="14" x2="21" y2="3" />
+        </svg>
+        Ports
+      </button>
+      <button class="btn btn-secondary" id="btnBackupAll" title="Backup Selected (or All) Containers">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        Backup All
+      </button>
+      <button class="btn btn-ghost" id="btnRegistry" title="Image Registry">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
+        Registry
+      </button>
+      <button class="btn btn-ghost" id="btnAI" title="AI Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2a10 10 0 1 0 10 10H12V2z" />
+          <path d="M22 12A10 10 0 0 0 12 2v10z" />
+        </svg>
+        AI
+      </button>
+      <button class="btn btn-ghost" id="btnNotifications" title="Notification Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+        </svg>
+        Alerts
+      </button>
+      <button class="btn btn-ghost" id="btnRefresh" title="Refresh">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="23 4 23 10 17 10" />
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+        </svg>
+      </button>
+      <button class="btn btn-ghost" id="btnLogout" title="Logout">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+          <polyline points="16 17 21 12 16 7" />
+          <line x1="21" y1="12" x2="9" y2="12" />
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main layout -->
+  <div class="layout">
+
+    <!-- Sidebar: container list -->
+    <aside class="sidebar">
+      <div class="sidebar-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8" />
+          <line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
+        <input type="text" id="searchInput" placeholder="Search containers…" />
+      </div>
+      <!-- Sort bar -->
+      <div class="sort-bar">
+        <input type="checkbox" id="chkSelectAll" class="c-item-check" title="Select/Deselect All visible"
+          style="margin-right: 4px;">
+        <label class="sort-label">Sort</label>
+        <div class="custom-select-container" id="sortSelectContainer" style="flex: 1; min-width: 0;">
+          <div class="custom-select-trigger" id="sortTrigger">Name</div>
+          <div class="custom-select-options">
+            <div class="custom-select-option selected" data-value="name">Name</div>
+            <div class="custom-select-option" data-value="status">Status</div>
+            <div class="custom-select-option" data-value="image">Image</div>
+            <div class="custom-select-option" data-value="created">Created</div>
+            <div class="custom-select-option" data-value="uptime">Uptime</div>
+          </div>
+          <input type="hidden" id="sortFieldInput" value="name" />
+        </div>
+        <button class="sort-order-btn" id="btnSortOrder" title="Toggle sort order">↑</button>
+      </div>
+      <div class="filter-tabs">
+        <button class="filter-tab active" data-filter="all">All</button>
+        <button class="filter-tab" data-filter="running">Running</button>
+        <button class="filter-tab" data-filter="stopped">Stopped</button>
+      </div>
+      <div id="containerList" class="container-list"></div>
+      <div class="sidebar-footer">
+        <button class="btn btn-sm btn-ghost" id="btnExportExcel" style="width:100%">📂 Export List to Excel</button>
+      </div>
+    </aside>
+
+    <!-- Main panel -->
+    <main class="main-panel" id="mainPanel">
+      <div class="empty-state" id="emptyState">
+        <p>Select a container to view details</p>
+      </div>
+
+      <!-- Detail view (hidden until a container is selected) -->
+      <div class="detail-view" id="detailView" style="display:none">
+        <!-- Detail header -->
+        <div class="detail-header">
+          <div class="detail-title">
+            <div class="status-dot" id="detailStatusDot"></div>
+            <h2 id="detailName"></h2>
+            <span class="badge" id="detailStatus"></span>
+          </div>
+          <div class="detail-actions">
+            <button class="btn btn-primary" id="btnRename">✒️ Rename</button>
+            <button class="btn btn-secondary" id="btnBackupSingle">💾 Backup</button>
+            <button class="btn btn-secondary" id="btnExportImage">📦 Export Image</button>
+            <button class="btn btn-success" id="btnStart">▶ Start</button>
+            <button class="btn btn-warning" id="btnStop">⏹ Stop</button>
+            <button class="btn btn-primary" id="btnRestart">↺ Restart</button>
+            <button class="btn btn-accent" id="btnUpdate">⬆ Update</button>
+            <button class="btn btn-danger" id="btnRemove">🗑 Uninstall</button>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <nav class="tab-nav">
+          <button class="tab-btn active" data-tab="overview">Overview</button>
+          <button class="tab-btn" data-tab="logs">Logs</button>
+          <button class="tab-btn" data-tab="terminal">Terminal</button>
+          <button class="tab-btn" data-tab="env">Env / Config</button>
+        </nav>
+
+        <!-- Tab: Overview -->
+        <div class="tab-pane active" id="tab-overview">
+          <div class="info-grid">
+            <div class="info-card">
+              <h4>Stats</h4>
+              <div class="card-content">
+                <div class="stats-row">
+                  <div class="stat-block">
+                    <div class="stat-ring-wrap">
+                      <svg class="stat-ring" viewBox="0 0 36 36">
+                        <circle class="ring-bg" cx="18" cy="18" r="15.9" />
+                        <circle class="ring-fg cpu-ring" id="ringCpu" cx="18" cy="18" r="15.9"
+                          stroke-dasharray="0 100" />
+                      </svg>
+                      <span class="ring-label" id="lblCpu">—</span>
+                    </div>
+                    <span class="stat-name">CPU</span>
+                  </div>
+                  <div class="stat-block">
+                    <div class="stat-ring-wrap">
+                      <svg class="stat-ring" viewBox="0 0 36 36">
+                        <circle class="ring-bg" cx="18" cy="18" r="15.9" />
+                        <circle class="ring-fg mem-ring" id="ringMem" cx="18" cy="18" r="15.9"
+                          stroke-dasharray="0 100" />
+                      </svg>
+                      <span class="ring-label" id="lblMem">—</span>
+                    </div>
+                    <span class="stat-name">Memory</span>
+                  </div>
+                  <div class="stat-block net-block">
+                    <div class="net-row"><span class="net-icon">↓</span><span id="lblNetRx">— MB</span></div>
+                    <div class="net-row"><span class="net-icon send">↑</span><span id="lblNetTx">— MB</span></div>
+                    <span class="stat-name">Network</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="info-card">
+              <h4>Details</h4>
+              <div class="card-content">
+                <table class="info-table">
+                  <tbody id="infoTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="info-card ports-card">
+              <h4>Port Bindings</h4>
+              <div class="card-content">
+                <div id="portsList" class="ports-list"></div>
+              </div>
+            </div>
+
+            <div class="info-card">
+              <h4>Mounts / Volumes</h4>
+              <div class="card-content">
+                <div id="mountsList" class="mounts-list"></div>
+              </div>
+            </div>
+
+            <div class="info-card">
+              <h4>Monitoring</h4>
+              <div class="card-content">
+                <div style="display:flex; flex-direction:column; gap:12px; margin-top:8px;">
+                  <label class="toggle-label"
+                    style="justify-content:space-between; width:100%; border-bottom:1px solid var(--border); padding-bottom:8px;">
+                    <span>Enable Monitoring</span>
+                    <label class="toggle-wrapper">
+                      <input type="checkbox" id="monEnabled" />
+                      <span class="toggle-switch"></span>
+                    </label>
+                  </label>
+                  <label class="toggle-label"
+                    style="justify-content:space-between; width:100%; border-bottom:1px solid var(--border); padding-bottom:8px;">
+                    <span>Auto-Restart on failure</span>
+                    <label class="toggle-wrapper">
+                      <input type="checkbox" id="monAutoRestart" />
+                      <span class="toggle-switch"></span>
+                    </label>
+                  </label>
+                  <label class="toggle-label"
+                    style="justify-content:space-between; width:100%; border-bottom:1px solid var(--border); padding-bottom:8px;">
+                    <span>Monitor Logs</span>
+                    <label class="toggle-wrapper">
+                      <input type="checkbox" id="monLogs" />
+                      <span class="toggle-switch"></span>
+                    </label>
+                  </label>
+                  <div style="font-size:12px; color:var(--text-muted);">
+                    Log Patterns (comma separated)
+                    <input type="text" id="monPatterns" class="modal-input" placeholder="error,panic,fatal"
+                      style="margin-top:4px;" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Logs -->
+        <div class="tab-pane" id="tab-logs" style="display:none">
+          <div class="logs-toolbar">
+            <button class="btn btn-sm btn-ghost" id="btnClearLogs">Clear</button>
+            <button class="btn btn-sm btn-ghost" id="btnExportLogsCSV">Export CSV</button>
+            <label class="toggle-label">
+              <input type="checkbox" id="chkAutoScroll" checked />
+              Auto-scroll
+            </label>
+            <span class="logs-status" id="logsStatus">Disconnected</span>
+          </div>
+          <div id="logOutput" class="log-output"></div>
+        </div>
+
+        <!-- Tab: Terminal -->
+        <div class="tab-pane" id="tab-terminal" style="display:none">
+          <div class="terminal-toolbar">
+            <span class="terminal-label">Interactive Shell</span>
+            <button class="btn btn-sm btn-ghost" id="btnReconnectTerm" style="display:none">Reconnect</button>
+          </div>
+          <div id="terminalStartOverlay"
+            style="display:flex; justify-content:center; align-items:center; height: calc(100vh - 280px); background: rgba(0,0,0,0.5); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: inset 0 4px 20px rgba(0,0,0,0.5);">
+            <button class="btn btn-primary" id="btnStartTermSession">▶ Start Terminal Session</button>
+          </div>
+          <div id="xtermContainer" class="xterm-container" style="display:none"></div>
+        </div>
+
+        <!-- Tab: Env / Config -->
+        <div class="tab-pane" id="tab-env" style="display:none">
+          <div class="env-section">
+            <h4>Environment Variables</h4>
+            <div id="envList" class="env-list"></div>
+          </div>
+          <div class="env-section">
+            <h4>Labels</h4>
+            <div id="labelsList" class="env-list"></div>
+          </div>
+        </div>
+    </main>
+  </div>
+
+  <!-- Update progress modal -->
+  <div class="modal-overlay" id="updateModal" style="display:none">
+    <div class="modal">
+      <h3>Updating Container</h3>
+      <div id="updateProgress" class="progress-log"></div>
+      <div class="modal-footer" id="updateModalFooter"
+        style="margin-top:16px; display:flex; gap:12px; justify-content:flex-end;">
+        <button class="btn btn-ghost" id="btnCancelUpdate">Cancel</button>
+        <button class="btn btn-primary" id="btnCloseUpdate" style="display:none">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm dialog -->
+  <div class="modal-overlay" id="confirmModal" style="display:none">
+    <div class="modal confirm-modal">
+      <h3 id="confirmTitle">Are you sure?</h3>
+      <p id="confirmMsg"></p>
+      <div class="confirm-btns">
+        <button class="btn btn-ghost" id="btnConfirmNo">Cancel</button>
+        <button class="btn btn-danger" id="btnConfirmYes">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ports Modal -->
+  <div class="modal-overlay" id="portsModal" style="display:none">
+    <div class="modal ports-modal">
+      <div class="ports-header">
+        <h3>Server Bound Ports</h3>
+        <span class="badge" id="portsCount">0 Active</span>
+      </div>
+      <div class="ports-list-large" id="allPortsList">
+        <div class="no-data" style="margin-top:1rem;">Loading...</div>
+      </div>
+      <div style="text-align:right; margin-top:16px">
+        <button class="btn btn-ghost" id="btnClosePorts">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rename Modal -->
+  <div class="modal-overlay" id="renameModal" style="display:none">
+    <div class="modal rename-modal">
+      <h3>Rename Container</h3>
+      <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 16px;">Enter a new name for this container.
+      </p>
+      <input type="text" id="renameInput" class="modal-input" placeholder="New container name" />
+      <div class="modal-footer" style="margin-top: 20px; display: flex; gap: 12px; justify-content: flex-end;">
+        <button class="btn btn-ghost" id="btnCancelRename">Cancel</button>
+        <button class="btn btn-primary" id="btnConfirmRename">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Registry Modal -->
+  <div class="modal-overlay" id="registryModal" style="display:none">
+    <div class="modal ports-modal" style="display: flex; flex-direction: column; gap: 16px; min-width: 600px;">
+      <div class="ports-header">
+        <h3>Image Registry</h3>
+        <button class="btn btn-ghost" id="btnCloseRegistry">Close</button>
+      </div>
+
+      <!-- Upload Zone -->
+      <div id="uploadZone"
+        style="border: 2px dashed rgba(255,255,255,0.2); padding: 32px; text-align: center; border-radius: var(--radius); cursor: pointer; transition: border-color 0.2s;">
+        <p style="color: var(--text-muted); pointer-events: none;">Drag &amp; Drop .tar image or Dockerfile here</p>
+        <input type="file" id="uploadInput" style="display:none" accept=".tar,.tar.gz,Dockerfile" />
+      </div>
+
+      <!-- Search Bar -->
+      <div class="sidebar-search"
+        style="border: 1px solid var(--border); border-radius: var(--radius); margin-top: 8px;">
+        <input type="text" id="imageSearchInput" placeholder="Search Docker Hub..." />
+        <button class="btn btn-primary btn-sm" id="btnSearchImage">Search</button>
+      </div>
+
+      <!-- Results List -->
+      <div class="ports-list-large" id="imageSearchResults" style="gap: 8px; margin-top: 10px;"></div>
+
+      <!-- Push to Registry Section -->
+      <div style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+        <h4
+          style="font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:0.1em; color:var(--text-muted); margin-bottom:12px;">
+          📤 Push Image to Registry</h4>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+          <div>
+            <label style="font-size:12px; color:var(--text-muted);">Image Name (local)</label>
+            <input type="text" id="pushImageName" class="modal-input" placeholder="myimage:latest" />
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted);">Registry URL</label>
+            <input type="text" id="pushRegistryUrl" class="modal-input" placeholder="registry.example.com" />
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted);">Username</label>
+            <input type="text" id="pushUsername" class="modal-input" placeholder="username" />
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted);">Password</label>
+            <input type="password" id="pushPassword" class="modal-input" placeholder="••••••••" />
+          </div>
+        </div>
+        <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
+          <button class="btn btn-primary btn-sm" id="btnPushImage">📤 Push</button>
+          <div id="pushProgress" style="font-size:12px; color:var(--text-muted); flex:1;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Run Config Modal (Monaco) -->
+  <div class="modal-overlay" id="runConfigModal" style="display:none">
+    <div class="modal ports-modal" style="min-width: 700px;">
+      <div class="ports-header">
+        <h3 id="runConfigTitle">Configure Run</h3>
+      </div>
+      <div id="monacoEditorContainer"
+        style="height: 350px; border: 1px solid rgba(255,255,255,0.1); margin-top: 10px; margin-bottom: 20px; border-radius: 8px; overflow: hidden;">
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 10px;">
+        <button class="btn btn-ghost" id="btnCancelRunConfig">Cancel</button>
+        <button class="btn btn-primary" id="btnConfirmRunConfig">Start Deploy</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Settings Modal -->
+  <div class="modal-overlay" id="aiSettingsModal" style="display:none">
+    <div class="modal ports-modal">
+      <h3>AI Gateway Settings</h3>
+      <p style="color:var(--text-muted); font-size: 13px;">Manage unified AI backend configuration.</p>
+
+      <div style="margin-top: 15px;">
+        <label style="font-size: 12px; color: var(--text-muted);">Provider</label>
+        <div class="custom-select-container" id="providerSelect">
+          <div class="custom-select-trigger" id="providerTrigger">OpenAI</div>
+          <div class="custom-select-options">
+            <div class="custom-select-search"><input type="text" placeholder="Search provider..." /></div>
+            <div class="custom-select-option selected" data-value="openai">OpenAI</div>
+            <div class="custom-select-option" data-value="anthropic">Anthropic</div>
+            <div class="custom-select-option" data-value="gemini">Google Gemini</div>
+            <div class="custom-select-option" data-value="openrouter">OpenRouter</div>
+            <div class="custom-select-option" data-value="lmstudio">LM Studio</div>
+            <div class="custom-select-option" data-value="ollama">Ollama</div>
+          </div>
+          <input type="hidden" id="aiProvider" value="openai" />
+        </div>
+      </div>
+
+      <div style="margin-top: 10px;">
+        <label style="font-size: 12px; color: var(--text-muted);">Default AI Agent (Model)</label>
+        <div class="custom-select-container" id="modelSelect">
+          <div class="custom-select-trigger" id="modelTrigger">gpt-4o</div>
+          <div class="custom-select-options">
+            <div class="custom-select-search"><input type="text" placeholder="Search model..." /></div>
+            <div id="modelOptionsList">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+          <input type="hidden" id="aiModel" value="gpt-4o" />
+        </div>
+      </div>
+
+      <div style="margin-top: 10px;">
+        <label style="font-size: 12px; color: var(--text-muted);">API Key</label>
+        <input type="password" id="aiKey" class="modal-input" placeholder="Bearer Token (if applicable)" />
+      </div>
+
+      <div style="margin-top: 10px;">
+        <label style="font-size: 12px; color: var(--text-muted);">Local Endpoint Base URI (Optional)</label>
+        <input type="text" id="aiEndpoint" class="modal-input" placeholder="http://localhost:1234/v1" />
+      </div>
+
+      <div style="margin-top: 10px;">
+        <label style="font-size: 12px; color: var(--text-muted);">System Prompt</label>
+        <textarea id="aiSystemPrompt" class="modal-input" style="height: 80px; resize: vertical;"></textarea>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+        <button class="btn btn-ghost" id="btnCancelAIConfig">Cancel</button>
+        <button class="btn btn-primary" id="btnSaveAIConfig">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- System Settings Modal -->
+  <div class="modal-overlay" id="mqttSettingsModal" style="display:none">
+    <div class="modal ports-modal" style="width: 400px; max-height: 90vh; overflow-y: auto;">
+      <h3>System Settings</h3>
+
+      <div style="margin-top: 15px; padding-bottom: 15px; border-bottom: 1px solid var(--border);">
+        <label
+          style="font-size: 12px; color: var(--text-muted); font-weight: 600; text-transform: uppercase;">Security</label>
+        <div style="margin-top: 8px;">
+          <label style="font-size: 12px; color: var(--text-muted);">Dashboard Password</label>
+          <input type="password" id="sysDashboardPassword" class="modal-input"
+            placeholder="Enter new password (optional)" />
+        </div>
+        <div style="margin-top: 8px;">
+          <label style="font-size: 12px; color: var(--text-muted);">App Base URL (for email links)</label>
+          <input type="text" id="sysAppUrl" class="modal-input" placeholder="http://192.168.1.100:5000" />
+        </div>
+      </div>
+
+      <div style="margin-top: 15px;">
+        <label style="font-size: 12px; color: var(--text-muted); font-weight: 600; text-transform: uppercase;">MQTT /
+          Home Assistant</label>
+        <div style="margin-top: 8px;">
+          <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text); cursor:pointer;">
+            <input type="checkbox" id="mqttEnabled" style="width:auto; transform:scale(1.2);" />
+            Enable MQTT Integration
+          </label>
+        </div>
+      </div>
+
+      <div style="margin-top: 15px;">
+        <label style="font-size: 12px; color: var(--text-muted);">Host : Port</label>
+        <div style="display: flex; gap: 8px;">
+          <input type="text" id="mqttHost" class="modal-input" placeholder="homeassistant.local" style="flex:2;" />
+          <input type="number" id="mqttPort" class="modal-input" placeholder="1883" style="flex:1;" />
+        </div>
+      </div>
+
+      <div style="margin-top: 10px; display:flex; gap:8px;">
+        <div style="flex:1;">
+          <label style="font-size: 12px; color: var(--text-muted);">Username</label>
+          <input type="text" id="mqttUser" class="modal-input" placeholder="mqtt_user" />
+        </div>
+        <div style="flex:1;">
+          <label style="font-size: 12px; color: var(--text-muted);">Password</label>
+          <input type="password" id="mqttPassword" class="modal-input" placeholder="••••••••" />
+        </div>
+      </div>
+
+      <div style="margin-top: 10px;">
+        <label style="font-size: 12px; color: var(--text-muted);">Client ID &amp; Discovery Prefix</label>
+        <div style="display: flex; gap: 8px;">
+          <input type="text" id="mqttClientId" class="modal-input" placeholder="containermanager" />
+          <input type="text" id="mqttPrefix" class="modal-input" placeholder="homeassistant" />
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+        <button class="btn btn-ghost" id="btnTestMQTTConfig"
+          style="margin-right: auto; border: 1px solid var(--border);">Test MQTT</button>
+        <button class="btn btn-ghost" id="btnCancelMQTTConfig">Cancel</button>
+        <button class="btn btn-primary" id="btnSaveMQTTConfig">Save &amp; Restart</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Notification Settings Modal -->
+  <div class="modal-overlay" id="notificationSettingsModal" style="display:none">
+    <div class="modal ports-modal" style="width: 500px; max-height: 90vh; overflow-y: auto;">
+      <h3>Notification Settings</h3>
+      <p style="color:var(--text-muted); font-size: 13px; margin-bottom: 20px;">AI-powered alerts via multiple channels.
+      </p>
+
+      <div style="display:flex; flex-direction:column; gap:20px;">
+        <!-- Email Section -->
+        <div class="settings-group" style="border: 1px solid var(--border); padding: 12px; border-radius: 8px;">
+          <label
+            style="display:flex; align-items:center; justify-content: space-between; font-weight:600; margin-bottom:10px; cursor:pointer;">
+            <div style="display:flex; align-items:center; gap:8px;">📧 Email (HTML)</div>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <button class="btn btn-ghost btn-test" onclick="testNotification('email', event)"
+                style="margin: 0;">Test</button>
+              <label class="toggle-wrapper" style="margin: 0;">
+                <input type="checkbox" class="provider-toggle" data-provider="email" />
+                <span class="toggle-switch"></span>
+              </label>
+            </div>
+          </label>
+          <div class="provider-fields" style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+            <div style="grid-column: span 2;">
+              <label style="font-size:11px; color:var(--text-muted);">SMTP Host</label>
+              <input type="text" id="notifSmtpHost" class="modal-input" placeholder="smtp.gmail.com" />
+            </div>
+            <div>
+              <label style="font-size:11px; color:var(--text-muted);">Port</label>
+              <input type="number" id="notifSmtpPort" class="modal-input" placeholder="587" />
+            </div>
+            <div>
+              <label style="font-size:11px; color:var(--text-muted); display: block; margin-bottom: 4px;">Use
+                TLS</label>
+              <label class="toggle-wrapper">
+                <input type="checkbox" id="notifSmtpTls" checked />
+                <span class="toggle-switch"></span>
+              </label>
+            </div>
+            <div>
+              <label style="font-size:11px; color:var(--text-muted);">User</label>
+              <input type="text" id="notifSmtpUser" class="modal-input" />
+            </div>
+            <div>
+              <label style="font-size:11px; color:var(--text-muted);">Password</label>
+              <input type="password" id="notifSmtpPass" class="modal-input" />
+            </div>
+            <div>
+              <label style="font-size:11px; color:var(--text-muted);">From Email</label>
+              <input type="text" id="notifFrom" class="modal-input" />
+            </div>
+            <div>
+              <label style="font-size:11px; color:var(--text-muted);">To Email</label>
+              <input type="text" id="notifTo" class="modal-input" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Telegram Section -->
+        <div class="settings-group" style="border: 1px solid var(--border); padding: 12px; border-radius: 8px;">
+          <label
+            style="display:flex; align-items:center; justify-content: space-between; font-weight:600; margin-bottom:10px; cursor:pointer;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="color: #24A1DE;">
+                <path
+                  d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221l-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.446 1.394c-.14.14-.23.23-.42.23l.192-2.733 4.973-4.495c.216-.193-.048-.3-.333-.11l-6.152 3.87-2.65-.828c-.574-.18-.585-.574.12-.85l10.332-3.987c.48-.18.9.112.742.926z" />
+              </svg>
+              Telegram
+            </div>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <button class="btn btn-ghost btn-test" onclick="testNotification('telegram', event)"
+                style="margin: 0;">Test</button>
+              <label class="toggle-wrapper" style="margin: 0;">
+                <input type="checkbox" class="provider-toggle" data-provider="telegram" />
+                <span class="toggle-switch"></span>
+              </label>
+            </div>
+          </label>
+          <div class="provider-fields">
+            <label style="font-size:11px; color:var(--text-muted);">Bot Token</label>
+            <input type="text" id="notifTeleToken" class="modal-input" placeholder="123456:ABC-DEF..." />
+            <label style="font-size:11px; color:var(--text-muted);">Chat ID</label>
+            <input type="text" id="notifTeleChat" class="modal-input" placeholder="-100123456789" />
+          </div>
+        </div>
+
+        <!-- MQTT Section -->
+        <div class="settings-group" style="border: 1px solid var(--border); padding: 12px; border-radius: 8px;">
+          <label
+            style="display:flex; align-items:center; justify-content: space-between; font-weight:600; margin-bottom:10px; cursor:pointer;">
+            <div style="display:flex; align-items:center; gap:8px;">📡 MQTT</div>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <button class="btn btn-ghost btn-test" onclick="testNotification('mqtt', event)"
+                style="margin: 0;">Test</button>
+              <label class="toggle-wrapper" style="margin: 0;">
+                <input type="checkbox" class="provider-toggle" data-provider="mqtt" />
+                <span class="toggle-switch"></span>
+              </label>
+            </div>
+          </label>
+          <div class="provider-fields">
+            <p style="font-size:11px; color:var(--text-muted); margin-bottom:5px;">Uses the main MQTT settings
+              configured in System Settings.</p>
+            <label style="font-size:11px; color:var(--text-muted);">Topic</label>
+            <input type="text" id="notifMqttTopic" class="modal-input" placeholder="containermanager/notifications" />
+          </div>
+        </div>
+
+        <!-- Webhook Section -->
+        <div class="settings-group" style="border: 1px solid var(--border); padding: 12px; border-radius: 8px;">
+          <label
+            style="display:flex; align-items:center; justify-content: space-between; font-weight:600; margin-bottom:10px; cursor:pointer;">
+            <div style="display:flex; align-items:center; gap:8px;">🔗 Webhook</div>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <button class="btn btn-ghost btn-test" onclick="testNotification('webhook', event)"
+                style="margin: 0;">Test</button>
+              <label class="toggle-wrapper" style="margin: 0;">
+                <input type="checkbox" class="provider-toggle" data-provider="webhook" />
+                <span class="toggle-switch"></span>
+              </label>
+            </div>
+          </label>
+          <div class="provider-fields">
+            <label style="font-size:11px; color:var(--text-muted);">URL</label>
+            <input type="text" id="notifWebUrl" class="modal-input" placeholder="https://api.example.com/notif" />
+            <label style="font-size:11px; color:var(--text-muted);">Method</label>
+            <div class="custom-select-container" id="notifWebMethodSelect">
+              <div class="custom-select-trigger" id="notifWebMethodTrigger">POST</div>
+              <div class="custom-select-options">
+                <div class="custom-select-option selected" data-value="POST">POST</div>
+                <div class="custom-select-option" data-value="GET">GET</div>
+              </div>
+              <input type="hidden" id="notifWebMethod" value="POST" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+        <button class="btn btn-ghost" id="btnCancelNotifConfig">Cancel</button>
+        <button class="btn btn-primary" id="btnSaveNotifConfig">Save Notification Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Floating AI Chat Panel ──────────────────────────────────────────────── -->
+  <div id="aiChatPanel" class="ai-chat-panel" style="display:none;">
+    <!-- Drag handle / title bar -->
+    <div class="ai-chat-header" id="aiChatDragHandle">
+      <span class="ai-chat-title">🤖 AI Assistant</span>
+      <div id="aiChatContextInfo" class="ai-chat-ctx"></div>
+      <div class="ai-chat-header-btns">
+        <button class="ai-chat-hbtn" id="btnDownloadChat" title="Download conversation">⬇</button>
+        <button class="ai-chat-hbtn" id="btnMinimizeChat" title="Minimize">—</button>
+        <button class="ai-chat-hbtn ai-chat-hbtn-close" id="btnCloseAIChat" title="Close">✕</button>
+      </div>
+    </div>
+
+    <!-- Chat history -->
+    <div id="aiChatHistory" class="ai-chat-history"></div>
+
+    <!-- Input row -->
+    <div class="ai-chat-input-row">
+      <input type="text" id="aiChatInput" class="modal-input" style="margin-top: 0; flex: 1;"
+        placeholder="Ask something about this container..." autocomplete="off" />
+      <button class="btn btn-primary btn-sm" id="btnSendAIChat">Send</button>
+    </div>
+
+    <!-- Resize handle -->
+    <div class="ai-chat-resize" id="aiChatResize" title="Drag to resize"></div>
+  </div>
+
+  <!-- AI Chat minimized bubble -->
+  <div id="aiChatBubble" class="ai-chat-bubble" title="Open AI Chat">🤖</div>
+
+  <!-- Toast Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="app.js?v=7" defer></script>
+</body>
+
+</html>

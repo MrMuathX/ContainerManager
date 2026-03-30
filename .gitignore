@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+
+# Local secrets and runtime data
+.env
+data/
+
+# Logs and local scratch
+*.log
+backend_logs*.txt
+backend_logs_full.txt
+containermanager_inspect.json
+openrouter_models.txt
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

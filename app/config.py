@@ -1,0 +1,61 @@
+import os
+import json
+from pathlib import Path
+
+SYSTEM_CONFIG_FILE = Path("data/system_config.json")
+NOTIFICATION_SETTINGS_FILE = Path("data/notification_settings.json")
+CONTAINER_MONITORING_FILE = Path("data/container_monitoring.json")
+
+class Settings:
+    def __init__(self):
+        self._load_system_config()
+
+    def _load_system_config(self):
+        # Default from env
+        self.DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "admin")
+        self.MQTT_ENABLED = os.getenv("MQTT_ENABLED", "false").lower() == "true"
+        self.MQTT_HOST = os.getenv("MQTT_HOST", "homeassistant.local")
+        self.MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+        self.MQTT_USER = os.getenv("MQTT_USER", "")
+        self.MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
+        self.MQTT_CLIENT_ID = os.getenv("MQTT_CLIENT_ID", "containermanager")
+        self.HA_DISCOVERY_PREFIX = os.getenv("HA_DISCOVERY_PREFIX", "homeassistant")
+        self.STATS_INTERVAL = int(os.getenv("STATS_INTERVAL", "5"))
+        self.APP_URL = os.getenv("APP_URL", "http://localhost:5000")
+
+        # Override from json
+        if SYSTEM_CONFIG_FILE.exists():
+            try:
+                data = json.loads(SYSTEM_CONFIG_FILE.read_text())
+                if "DASHBOARD_PASSWORD" in data and data["DASHBOARD_PASSWORD"]: 
+                    self.DASHBOARD_PASSWORD = data["DASHBOARD_PASSWORD"]
+                if "MQTT_ENABLED" in data: self.MQTT_ENABLED = data["MQTT_ENABLED"]
+                if "MQTT_HOST" in data: self.MQTT_HOST = data["MQTT_HOST"]
+                if "MQTT_PORT" in data: self.MQTT_PORT = int(data["MQTT_PORT"])
+                if "MQTT_USER" in data: self.MQTT_USER = data["MQTT_USER"]
+                if "MQTT_PASSWORD" in data: self.MQTT_PASSWORD = data["MQTT_PASSWORD"]
+                if "MQTT_CLIENT_ID" in data: self.MQTT_CLIENT_ID = data["MQTT_CLIENT_ID"]
+                if "HA_DISCOVERY_PREFIX" in data: self.HA_DISCOVERY_PREFIX = data["HA_DISCOVERY_PREFIX"]
+                if "APP_URL" in data: self.APP_URL = data["APP_URL"]
+            except Exception as e:
+                print(f"Error loading system_config.json: {e}")
+
+        # Load notifications
+        from app.models import NotificationSettings
+        self.notification_settings = NotificationSettings()
+        if NOTIFICATION_SETTINGS_FILE.exists():
+            try:
+                data = json.loads(NOTIFICATION_SETTINGS_FILE.read_text())
+                self.notification_settings = NotificationSettings(**data)
+            except Exception as e:
+                print(f"Error loading notification_settings.json: {e}")
+
+        # Load container monitoring config
+        self.container_monitoring = {}
+        if CONTAINER_MONITORING_FILE.exists():
+            try:
+                self.container_monitoring = json.loads(CONTAINER_MONITORING_FILE.read_text())
+            except Exception as e:
+                print(f"Error loading container_monitoring.json: {e}")
+
+settings = Settings()

@@ -1,0 +1,17 @@
+services:
+  containermanager:
+    build: .
+    container_name: containermanager
+    ports:
+      - "8081:8080"
+    volumes:
+      # KEY: Gives access to host Docker engine
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Data persistence for configurations
+      - ./data:/app/data
+    env_file:
+      - .env
+    restart: unless-stopped
+    # Run as root to access docker socket
+    # (or add your user to the 'docker' group and remove this)
+    user: "0:0"
