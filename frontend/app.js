@@ -16,6 +16,7 @@ let fitAddon = null;
 let statsInterval = null;
 let listInterval = null;
 let selectedCheckboxIds = new Set();
+let dashboardViewMode = localStorage.getItem('dashViewMode') || 'grid';
 
 const debounce = (fn, delay) => {
   let timeoutId;
@@ -167,13 +168,18 @@ function toggleFolder(name) {
 }
 
 function getGroup(c) {
-  // Try compose project label first
+  // Use compose project if available
   if (c.labels && c.labels['com.docker.compose.project']) {
     return c.labels['com.docker.compose.project'];
   }
-  // Try common prefixes
+  // Split by common delimiters and take first component or "Other"
   const parts = c.name.split(/[_-]/);
-  if (parts.length > 1) return parts[0];
+  if (parts.length > 1) {
+    // If it's something like app-web-1, group by app-web? 
+    // Let's try to be smart: if more than 2 parts, use first two
+    if (parts.length > 2) return parts[0] + ' / ' + parts[1];
+    return parts[0];
+  }
   return 'Other';
 }
 
@@ -216,17 +222,26 @@ function renderList() {
   dashItem.onclick = () => showDashboard();
   list.appendChild(dashItem);
 
-  Object.keys(groups).sort().forEach(gName => {
+  // Sorting groups alphabetically
+  const sortedGroupNames = Object.keys(groups).sort((a, b) => {
+    if (a === 'Other') return 1;
+    if (b === 'Other') return -1;
+    return a.localeCompare(b);
+  });
+
+  sortedGroupNames.forEach(gName => {
     const folder = document.createElement('div');
     folder.className = 'folder-item';
     const isCollapsed = collapsedFolders.has(gName);
     
-    const folderLabel = esc(gName);
+    // Split nested groups by ' / ' if you want a visual tree look
+    const displayLabel = gName;
+    
     folder.innerHTML = `
-      <div class="folder-header ${isCollapsed ? 'collapsed' : ''}" onclick="toggleFolder('${folderLabel}')">
+      <div class="folder-header ${isCollapsed ? 'collapsed' : ''}" onclick="toggleFolder('${esc(gName)}')">
         <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px"><polyline points="6 9 12 15 18 9"></polyline></svg>
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
-        <span style="flex:1; margin-left:8px">${folderLabel} (${groups[gName].length})</span>
+        <span style="flex:1; margin-left:8px">${esc(displayLabel)} <small style="opacity:0.6">(${groups[gName].length})</small></span>
       </div>
       <div class="folder-content ${isCollapsed ? 'hidden' : ''}"></div>
     `;
@@ -270,65 +285,140 @@ function showDashboard() {
 function showDashboardViewOnly() {
   document.getElementById('dashboardView').style.display = 'block';
   document.getElementById('detailView').style.display = 'none';
+  
+  // Update view switcher active state
+  document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
+  if (dashboardViewMode === 'grid') document.getElementById('btnViewGrid')?.classList.add('active');
+  else document.getElementById('btnViewList')?.classList.add('active');
+
   renderDashboard();
 }
 
+function toggleDashboardView(mode) {
+  dashboardViewMode = mode;
+  localStorage.setItem('dashViewMode', mode);
+  showDashboardViewOnly();
+}
+
 function renderDashboard() {
-  const grid = document.getElementById('dashboardGrid');
-  if (!grid) return;
+  const container = document.getElementById('dashboardGrid');
+  if (!container) return;
+  
+  // Set layout class
+  container.className = dashboardViewMode === 'grid' ? 'dashboard-grid' : 'dashboard-list';
   
   if (containers.length === 0) {
-    grid.innerHTML = '<div class="no-data">No containers found.</div>';
+    container.innerHTML = '<div class="no-data">No containers found.</div>';
     return;
   }
 
-  // Use same filtering as list for consistency? Yes.
   const query = searchQuery.toLowerCase();
   let items = containers.slice();
   if (filter === 'running') items = items.filter(c => c.status === 'running');
   if (filter === 'stopped') items = items.filter(c => c.status !== 'running');
   if (query) items = items.filter(c => c.name.toLowerCase().includes(query) || c.image.toLowerCase().includes(query));
 
-  grid.innerHTML = items.map(c => {
-    const isRunning = c.status === 'running';
-    const failedText = (c.exit_code !== 0 && !isRunning) ? ` (Exit: ${c.exit_code})` : '';
-    const group = getGroup(c);
-    
-    return `
-    <div class="dashboard-card" onclick="selectContainer('${c.id}')">
-      <div class="d-card-header">
-        <div class="d-card-title">
-          <div class="d-card-name">${esc(c.name)}</div>
-          <div class="d-card-image">${esc(c.image)}</div>
-        </div>
-        <div class="d-card-status">
-          <div class="badge ${isRunning ? 'running' : 'stopped'}">${c.status.toUpperCase()}${failedText}</div>
-          <div class="status-dot ${dotClass(c.status)}"></div>
-        </div>
-      </div>
+  if (dashboardViewMode === 'grid') {
+    container.innerHTML = items.map(c => {
+      const isRunning = c.status === 'running';
+      const failedText = (c.exit_code !== 0 && !isRunning) ? ` (Exit: ${c.exit_code})` : '';
+      const group = getGroup(c);
       
-      <div class="d-card-meta">
-        ${group !== 'Other' ? `<span class="meta-tag">Group: ${esc(group)}</span>` : ''}
-        ${c.labels && c.labels['com.docker.compose.project'] ? `<span class="meta-tag" title="Project">Project: ${esc(c.labels['com.docker.compose.project'])}</span>` : ''}
-        ${c.exit_code !== 0 && !isRunning ? `<span class="meta-tag status-down">Failed Code: ${c.exit_code}</span>` : ''}
-      </div>
+      return `
+      <div class="dashboard-card" onclick="selectContainer('${c.id}')">
+        <div class="d-card-header">
+          <div class="d-card-title">
+            <div class="d-card-name">${esc(c.name)}</div>
+            <div class="d-card-image">${esc(c.image)}</div>
+          </div>
+          <div class="d-card-status">
+            ${!isRunning ? `<div class="badge stopped">${c.status.toUpperCase()}${failedText}</div>` : ''}
+            <div class="status-dot ${dotClass(c.status)}"></div>
+          </div>
+        </div>
+        
+        <div class="d-card-meta">
+          ${group !== 'Other' ? `<span class="meta-tag">Group: ${esc(group)}</span>` : ''}
+          ${c.labels && c.labels['com.docker.compose.project'] ? `<span class="meta-tag" title="Project">Project: ${esc(c.labels['com.docker.compose.project'])}</span>` : ''}
+        </div>
 
-      <div class="d-card-actions">
-        <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'start')" ${isRunning ? 'disabled' : ''}>▶ Start</button>
-        <button class="btn btn-warning btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'stop')" ${!isRunning ? 'disabled' : ''}>⏹ Stop</button>
-        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'restart')">↺ Restart</button>
-        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); selectContainer('${c.id}')">👁 Details</button>
+        <div class="d-card-actions">
+          <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'view-logs')" title="View Logs">📄 Logs</button>
+          <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'view-terminal')" title="Terminal">⌨ Term</button>
+          <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'start')" ${isRunning ? 'disabled' : ''}>▶ Start</button>
+          <button class="btn btn-warning btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'stop')" ${!isRunning ? 'disabled' : ''}>⏹ Stop</button>
+          <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'restart')" title="Restart Container">↺ Refresh</button>
+        </div>
       </div>
-    </div>
-    `;
-  }).join('');
+      `;
+    }).join('');
+  } else {
+    // Grouping for List Mode
+    const groups = {};
+    items.forEach(c => {
+      const g = getGroup(c);
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(c);
+    });
+
+    const sortedGroupNames = Object.keys(groups).sort((a, b) => {
+      if (a === 'Other') return 1;
+      if (b === 'Other') return -1;
+      return a.localeCompare(b);
+    });
+
+    let html = '';
+    sortedGroupNames.forEach(gName => {
+      html += `
+        <div class="dashboard-group-header">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+          ${esc(gName)} (${groups[gName].length})
+        </div>
+      `;
+      html += groups[gName].map(c => {
+        const isRunning = c.status === 'running';
+        const failedText = (c.exit_code !== 0 && !isRunning) ? ` (Exit: ${c.exit_code})` : '';
+        const group = getGroup(c);
+        return `
+        <div class="d-list-item" onclick="selectContainer('${c.id}')">
+          <div class="d-list-info">
+            <div class="status-dot ${dotClass(c.status)}"></div>
+            <div class="d-list-name">${esc(c.name)}</div>
+            <div class="d-list-image">${esc(c.image)}</div>
+          </div>
+          <div class="d-list-status">
+            ${!isRunning ? `<div class="badge stopped">${c.status.toUpperCase()}${failedText}</div>` : ''}
+          </div>
+          <div class="d-list-actions">
+            <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'view-logs')" title="View Logs">📄 Logs</button>
+            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'view-terminal')" title="Terminal">⌨ Term</button>
+            <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'start')" ${isRunning ? 'disabled' : ''}>▶ Start</button>
+            <button class="btn btn-warning btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'stop')" ${!isRunning ? 'disabled' : ''}>⏹ Stop</button>
+            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'restart')" title="Restart">↺ Refresh</button>
+          </div>
+        </div>
+        `;
+      }).join('');
+    });
+    container.innerHTML = html;
+  }
 }
 
 async function quickAction(id, action) {
+  if (action === 'view-logs') {
+    await selectContainer(id);
+    switchTab('logs');
+    return;
+  }
+  if (action === 'view-terminal') {
+    await selectContainer(id);
+    switchTab('terminal');
+    return;
+  }
   try {
     toast(`${action.charAt(0).toUpperCase() + action.slice(1)}ing container...`, 'info', 1500);
     await api(`/api/containers/${id}/${action}`, 'POST');
-    await loadContainers(); // Refresh list & dashboard
+    await loadContainers(); 
     toast(`${action.charAt(0).toUpperCase() + action.slice(1)}ed successfully`, 'success');
   } catch (e) {
     toast(`${action} failed: ${e.message}`, 'error');
@@ -415,6 +505,7 @@ async function loadMonitoringConfig(id) {
     const conf = await r.json();
     document.getElementById('monEnabled').checked = conf.enabled;
     document.getElementById('monAutoRestart').checked = conf.auto_restart;
+    document.getElementById('monAutoStartOnStop').checked = conf.auto_start_on_stop || false;
     document.getElementById('monLogs').checked = conf.monitor_logs;
     document.getElementById('monPatterns').value = conf.log_patterns.join(',');
   } catch (e) { console.error("Monitor load err", e); }
@@ -1539,6 +1630,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const conf = {
       enabled: document.getElementById('monEnabled').checked,
       auto_restart: document.getElementById('monAutoRestart').checked,
+      auto_start_on_stop: document.getElementById('monAutoStartOnStop').checked,
       monitor_logs: document.getElementById('monLogs').checked,
       log_patterns: document.getElementById('monPatterns').value.split(',').map(p => p.trim()).filter(p => p)
     };
@@ -1550,8 +1642,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  ['monEnabled', 'monAutoRestart', 'monLogs'].forEach(id => {
-    document.getElementById(id).addEventListener('change', saveMonitoring);
+  ['monEnabled', 'monAutoRestart', 'monAutoStartOnStop', 'monLogs'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', saveMonitoring);
   });
   document.getElementById('monPatterns').addEventListener('input', debounce(saveMonitoring, 1000));
 

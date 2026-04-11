@@ -50,24 +50,26 @@ class MonitoringService:
                 exit_code = container.attrs.get('State', {}).get('ExitCode', 0)
                 health = container.attrs.get('State', {}).get('Health', {}).get('Status', 'none')
                 
-                # Detect failure: transitioned from running to exited with non-zero OR health became unhealthy
+                # Detection Logic
                 is_failed = False
                 if prev_status == "running" and curr_status == "exited" and exit_code != 0:
                     is_failed = True
-                elif health == "unhealthy" and (prev_status != "unhealthy" or curr_status == "running"):
-                    # If it's running but health is unhealthy, it's a failure
+                elif health == "unhealthy":
                     is_failed = True
-                elif prev_status == "running" and curr_status == "exited" and config.auto_restart:
-                    # If auto_restart is ENABLED, we treat ANY stop as a potential failure we want to recover from
-                    # but maybe the user manually stopped it? This is the tricky part.
-                    # For now, let's assume if it transitioned to exited and auto_restart is ON, we handle it.
-                    is_failed = True
+                
+                # Decision Logic
+                should_auto_start = False
+                if is_failed and config.auto_restart:
+                    should_auto_start = True
+                elif curr_status == "exited" and config.auto_start_on_stop:
+                    # Specific request: start container if it stops for any reason
+                    should_auto_start = True
 
-                if is_failed:
-                    await self.handle_container_stopped(container, config, base_url, is_failure=True)
-                elif prev_status == "running" and curr_status != "running":
-                    # Simple stop, not necessarily a "failure" but still handle notification
-                    await self.handle_container_stopped(container, config, base_url, is_failure=False)
+                if should_auto_start:
+                    await self.handle_container_stopped(container, config, base_url, is_failure=is_failed, trigger_restart=True)
+                elif is_failed or (prev_status == "running" and curr_status != "running"):
+                    # Just notify if we aren't auto-starting
+                    await self.handle_container_stopped(container, config, base_url, is_failure=is_failed, trigger_restart=False)
                 
                 self.previous_states[container.id] = curr_status if health != "unhealthy" else "unhealthy"
 
@@ -78,11 +80,11 @@ class MonitoringService:
         except Exception as e:
             logger.error(f"Error in monitoring loop: {e}")
 
-    async def handle_container_stopped(self, container, config: ContainerMonitoringConfig, base_url: str, is_failure: bool = False):
+    async def handle_container_stopped(self, container, config: ContainerMonitoringConfig, base_url: str, is_failure: bool = False, trigger_restart: bool = False):
         msg = f"Container {container.name} {container.status}"
         if is_failure:
             msg = f"FAILURE DETECTED: {container.name} {container.status}"
-        logger.info(f"{msg}. Autorestart: {config.auto_restart}")
+        logger.info(f"{msg}. Trigger Restart: {trigger_restart}")
         
         event_type = "Container Failure" if is_failure else "Container Stopped"
         cause, effect, recommendation = await generate_ai_notification(event_type, container.name)
@@ -102,19 +104,19 @@ class MonitoringService:
             links=links
         )
         
-        if config.auto_restart:
+        if trigger_restart:
             try:
-                logger.info(f"Attempting auto-restart of {container.name}")
+                logger.info(f"Attempting restart of {container.name}")
                 container.start()
                 await send_notification(
-                    title=f"INFO: {container.name} Auto-Restarted",
+                    title=f"INFO: {container.name} Restarted",
                     message_body=f"Container {container.name} was automatically restarted by Monitoring Service.",
-                    cause="Auto-restart enabled",
+                    cause="Auto-restart/Auto-start on stop enabled",
                     effect="System is back online",
                     recommendation="No further action needed"
                 )
             except Exception as e:
-                logger.error(f"Auto-restart failed for {container.name}: {e}")
+                logger.error(f"Restart failed for {container.name}: {e}")
 
     async def check_container_logs(self, container, config: ContainerMonitoringConfig, base_url: str):
         # Only check last 1 minute of logs

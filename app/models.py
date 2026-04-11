@@ -104,5 +104,6 @@ class NotificationSettings(BaseModel):
 class ContainerMonitoringConfig(BaseModel):
     enabled: bool = False
     auto_restart: bool = False
+    auto_start_on_stop: bool = False
     monitor_logs: bool = False
     log_patterns: List[str] = ["error", "panic", "fatal", "exception"]
