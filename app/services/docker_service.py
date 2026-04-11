@@ -185,6 +185,8 @@ def list_containers(all_containers: bool = True) -> list[ContainerSummary]:
             ports=_parse_ports(c),
             created=created_str[:19],
             uptime=_uptime(created_str, c.status),
+            labels=c.attrs.get("Config", {}).get("Labels", {}),
+            exit_code=c.attrs.get("State", {}).get("ExitCode", 0),
         ))
     return result
 

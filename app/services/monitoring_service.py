@@ -46,10 +46,30 @@ class MonitoringService:
 
                 # 1. Check Status Change
                 prev_status = self.previous_states.get(container.id)
-                if prev_status == "running" and container.status != "running":
-                    await self.handle_container_stopped(container, config, base_url)
+                curr_status = container.status
+                exit_code = container.attrs.get('State', {}).get('ExitCode', 0)
+                health = container.attrs.get('State', {}).get('Health', {}).get('Status', 'none')
                 
-                self.previous_states[container.id] = container.status
+                # Detect failure: transitioned from running to exited with non-zero OR health became unhealthy
+                is_failed = False
+                if prev_status == "running" and curr_status == "exited" and exit_code != 0:
+                    is_failed = True
+                elif health == "unhealthy" and (prev_status != "unhealthy" or curr_status == "running"):
+                    # If it's running but health is unhealthy, it's a failure
+                    is_failed = True
+                elif prev_status == "running" and curr_status == "exited" and config.auto_restart:
+                    # If auto_restart is ENABLED, we treat ANY stop as a potential failure we want to recover from
+                    # but maybe the user manually stopped it? This is the tricky part.
+                    # For now, let's assume if it transitioned to exited and auto_restart is ON, we handle it.
+                    is_failed = True
+
+                if is_failed:
+                    await self.handle_container_stopped(container, config, base_url, is_failure=True)
+                elif prev_status == "running" and curr_status != "running":
+                    # Simple stop, not necessarily a "failure" but still handle notification
+                    await self.handle_container_stopped(container, config, base_url, is_failure=False)
+                
+                self.previous_states[container.id] = curr_status if health != "unhealthy" else "unhealthy"
 
                 # 2. Check Logs if running
                 if config.enabled and config.monitor_logs and container.status == "running":
@@ -58,10 +78,13 @@ class MonitoringService:
         except Exception as e:
             logger.error(f"Error in monitoring loop: {e}")
 
-    async def handle_container_stopped(self, container, config: ContainerMonitoringConfig, base_url: str):
-        logger.info(f"Container {container.name} stopped. Autorestart: {config.auto_restart}")
+    async def handle_container_stopped(self, container, config: ContainerMonitoringConfig, base_url: str, is_failure: bool = False):
+        msg = f"Container {container.name} {container.status}"
+        if is_failure:
+            msg = f"FAILURE DETECTED: {container.name} {container.status}"
+        logger.info(f"{msg}. Autorestart: {config.auto_restart}")
         
-        event_type = "Container Stopped"
+        event_type = "Container Failure" if is_failure else "Container Stopped"
         cause, effect, recommendation = await generate_ai_notification(event_type, container.name)
         
         links = [
@@ -69,9 +92,10 @@ class MonitoringService:
             {"text": "View Dashboard", "url": base_url}
         ]
         
+        title_prefix = "ALERT: FAILURE" if is_failure else "ALERT: STOPPED"
         await send_notification(
-            title=f"ALERT: {container.name} is {container.status}",
-            message_body=f"Container {container.name} transitioned from running to {container.status}.",
+            title=f"{title_prefix}: {container.name}",
+            message_body=f"Container {container.name} is in state '{container.status}' (ExitCode: {container.attrs.get('State', {}).get('ExitCode', 0)}).",
             cause=cause,
             effect=effect,
             recommendation=recommendation,

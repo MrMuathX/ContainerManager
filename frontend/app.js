@@ -157,11 +157,31 @@ function sortValue(c, field) {
   }
 }
 
+let collapsedFolders = new Set(JSON.parse(localStorage.getItem('collapsedFolders') || '[]'));
+
+function toggleFolder(name) {
+  if (collapsedFolders.has(name)) collapsedFolders.delete(name);
+  else collapsedFolders.add(name);
+  localStorage.setItem('collapsedFolders', JSON.stringify(Array.from(collapsedFolders)));
+  renderList();
+}
+
+function getGroup(c) {
+  // Try compose project label first
+  if (c.labels && c.labels['com.docker.compose.project']) {
+    return c.labels['com.docker.compose.project'];
+  }
+  // Try common prefixes
+  const parts = c.name.split(/[_-]/);
+  if (parts.length > 1) return parts[0];
+  return 'Other';
+}
+
 function renderList() {
   const query = searchQuery.toLowerCase();
   let items = containers.slice();
-  if (filter === 'running') items = items.filter(c => c.state === 'running');
-  if (filter === 'stopped') items = items.filter(c => c.state === 'stopped');
+  if (filter === 'running') items = items.filter(c => c.status === 'running');
+  if (filter === 'stopped') items = items.filter(c => c.status !== 'running');
   if (query) items = items.filter(c => c.name.toLowerCase().includes(query) || c.image.toLowerCase().includes(query));
 
   // Sort
@@ -172,42 +192,149 @@ function renderList() {
     return sortOrder === 'asc' ? cmp : -cmp;
   });
 
-  const list = document.getElementById('containerList');
-  const existingNodes = new Map();
-  Array.from(list.children).forEach(node => existingNodes.set(node.dataset.id, node));
-
+  // Grouping
+  const groups = {};
   items.forEach(c => {
-    const isActive = c.id === selectedId;
-    const isChecked = selectedCheckboxIds.has(c.id);
-    const cname = 'c-item' + (isActive ? ' active' : '');
-    const html = `
-      <input type="checkbox" class="c-item-check" data-cid="${c.id}"${isChecked ? ' checked' : ''} title="Select for backup" onclick="event.stopPropagation(); toggleCheckbox('${c.id}', this.checked)">
-      <div class="c-item-dot ${dotClass(c.status)}"></div>
-      <div class="c-item-info">
-        <div class="c-item-name">${esc(c.name)}</div>
-        <div class="c-item-image">${esc(c.image)}</div>
-      </div>`;
-
-    if (existingNodes.has(c.id)) {
-      const node = existingNodes.get(c.id);
-      if (node.className !== cname) node.className = cname;
-      node.innerHTML = html;
-      existingNodes.delete(c.id);
-      list.appendChild(node);
-    } else {
-      const div = document.createElement('div');
-      div.className = cname;
-      div.dataset.id = c.id;
-      div.innerHTML = html;
-      div.onclick = () => selectContainer(c.id);
-      list.appendChild(div);
-    }
+    const g = getGroup(c);
+    if (!groups[g]) groups[g] = [];
+    groups[g].push(c);
   });
 
-  existingNodes.forEach(node => node.remove());
+  const list = document.getElementById('containerList');
+  list.innerHTML = '';
+
+  // Dashboard special item
+  const dashItem = document.createElement('div');
+  dashItem.className = 'c-item' + (!selectedId ? ' active' : '');
+  dashItem.innerHTML = `
+    <div class="c-item-dot" style="background:var(--blue)"></div>
+    <div class="c-item-info">
+      <div class="c-item-name">Main Dashboard</div>
+      <div class="c-item-image">Cluster Overview</div>
+    </div>
+  `;
+  dashItem.onclick = () => showDashboard();
+  list.appendChild(dashItem);
+
+  Object.keys(groups).sort().forEach(gName => {
+    const folder = document.createElement('div');
+    folder.className = 'folder-item';
+    const isCollapsed = collapsedFolders.has(gName);
+    
+    const folderLabel = esc(gName);
+    folder.innerHTML = `
+      <div class="folder-header ${isCollapsed ? 'collapsed' : ''}" onclick="toggleFolder('${folderLabel}')">
+        <svg class="chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+        <span style="flex:1; margin-left:8px">${folderLabel} (${groups[gName].length})</span>
+      </div>
+      <div class="folder-content ${isCollapsed ? 'hidden' : ''}"></div>
+    `;
+    
+    const content = folder.querySelector('.folder-content');
+    groups[gName].forEach(c => {
+      const isActive = c.id === selectedId;
+      const isChecked = selectedCheckboxIds.has(c.id);
+      const div = document.createElement('div');
+      div.className = 'c-item' + (isActive ? ' active' : '');
+      div.dataset.id = c.id;
+      
+      const failedIcon = (c.exit_code !== 0 && c.status !== 'running') ? 
+        `<span class="status-down" title="Failed (Exit Code ${c.exit_code})" style="margin-left:4px">⚠</span>` : '';
+
+      div.innerHTML = `
+        <input type="checkbox" class="c-item-check" data-cid="${c.id}"${isChecked ? ' checked' : ''} onclick="event.stopPropagation(); toggleCheckbox('${c.id}', this.checked)">
+        <div class="c-item-dot ${dotClass(c.status)}"></div>
+        <div class="c-item-info">
+          <div class="c-item-name">${esc(c.name)}${failedIcon}</div>
+          <div class="c-item-image">${esc(c.image)}</div>
+        </div>`;
+      div.onclick = () => selectContainer(c.id);
+      content.appendChild(div);
+    });
+    list.appendChild(folder);
+  });
+
   updateBackupBtnLabel();
   updateSelectAllCheckboxState();
+  if (!selectedId) showDashboardViewOnly();
 }
+
+function showDashboard() {
+  selectedId = null;
+  selectedDetail = null;
+  renderList();
+  showDashboardViewOnly();
+}
+
+function showDashboardViewOnly() {
+  document.getElementById('dashboardView').style.display = 'block';
+  document.getElementById('detailView').style.display = 'none';
+  renderDashboard();
+}
+
+function renderDashboard() {
+  const grid = document.getElementById('dashboardGrid');
+  if (!grid) return;
+  
+  if (containers.length === 0) {
+    grid.innerHTML = '<div class="no-data">No containers found.</div>';
+    return;
+  }
+
+  // Use same filtering as list for consistency? Yes.
+  const query = searchQuery.toLowerCase();
+  let items = containers.slice();
+  if (filter === 'running') items = items.filter(c => c.status === 'running');
+  if (filter === 'stopped') items = items.filter(c => c.status !== 'running');
+  if (query) items = items.filter(c => c.name.toLowerCase().includes(query) || c.image.toLowerCase().includes(query));
+
+  grid.innerHTML = items.map(c => {
+    const isRunning = c.status === 'running';
+    const failedText = (c.exit_code !== 0 && !isRunning) ? ` (Exit: ${c.exit_code})` : '';
+    const group = getGroup(c);
+    
+    return `
+    <div class="dashboard-card" onclick="selectContainer('${c.id}')">
+      <div class="d-card-header">
+        <div class="d-card-title">
+          <div class="d-card-name">${esc(c.name)}</div>
+          <div class="d-card-image">${esc(c.image)}</div>
+        </div>
+        <div class="d-card-status">
+          <div class="badge ${isRunning ? 'running' : 'stopped'}">${c.status.toUpperCase()}${failedText}</div>
+          <div class="status-dot ${dotClass(c.status)}"></div>
+        </div>
+      </div>
+      
+      <div class="d-card-meta">
+        ${group !== 'Other' ? `<span class="meta-tag">Group: ${esc(group)}</span>` : ''}
+        ${c.labels && c.labels['com.docker.compose.project'] ? `<span class="meta-tag" title="Project">Project: ${esc(c.labels['com.docker.compose.project'])}</span>` : ''}
+        ${c.exit_code !== 0 && !isRunning ? `<span class="meta-tag status-down">Failed Code: ${c.exit_code}</span>` : ''}
+      </div>
+
+      <div class="d-card-actions">
+        <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'start')" ${isRunning ? 'disabled' : ''}>▶ Start</button>
+        <button class="btn btn-warning btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'stop')" ${!isRunning ? 'disabled' : ''}>⏹ Stop</button>
+        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); quickAction('${c.id}', 'restart')">↺ Restart</button>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation(); selectContainer('${c.id}')">👁 Details</button>
+      </div>
+    </div>
+    `;
+  }).join('');
+}
+
+async function quickAction(id, action) {
+  try {
+    toast(`${action.charAt(0).toUpperCase() + action.slice(1)}ing container...`, 'info', 1500);
+    await api(`/api/containers/${id}/${action}`, 'POST');
+    await loadContainers(); // Refresh list & dashboard
+    toast(`${action.charAt(0).toUpperCase() + action.slice(1)}ed successfully`, 'success');
+  } catch (e) {
+    toast(`${action} failed: ${e.message}`, 'error');
+  }
+}
+
 
 function updateSelectAllCheckboxState() {
   const chk = document.getElementById('chkSelectAll');
@@ -260,7 +387,7 @@ function updateBackupBtnLabel() {
 async function selectContainer(id) {
   selectedId = id;
   renderList();
-  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('dashboardView').style.display = 'none';
   document.getElementById('detailView').style.display = 'flex';
   document.getElementById('detailView').style.flexDirection = 'column';
 
@@ -1312,6 +1439,23 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnStartTerm = document.getElementById('btnStartTermSession');
   if (btnStartTerm) btnStartTerm.onclick = () => startTerminal();
   document.getElementById('btnReconnectTerm').onclick = () => { connectTerminal(); };
+
+  // Dashboard buttons
+  document.getElementById('btnRefreshDashboard').onclick = () => loadContainers();
+  document.getElementById('btnStartAll').onclick = async () => {
+    if (await confirm('Start All', 'Are you sure you want to start all containers?')) {
+      toast('Starting all containers...', 'info');
+      await api('/api/containers/bulk/start', 'POST', { ids: containers.map(c => c.id) });
+      loadContainers();
+    }
+  };
+  document.getElementById('btnStopAll').onclick = async () => {
+    if (await confirm('Stop All', 'Are you sure you want to stop all active containers?')) {
+      toast('Stopping containers...', 'info');
+      await api('/api/containers/bulk/stop', 'POST', { ids: containers.map(c => c.id) });
+      loadContainers();
+    }
+  };
 
   // --- Notification Settings ---
   document.getElementById('btnNotifications').onclick = async () => {

@@ -143,8 +143,29 @@
 
     <!-- Main panel -->
     <main class="main-panel" id="mainPanel">
-      <div class="empty-state" id="emptyState">
-        <p>Select a container to view details</p>
+      <!-- Dashboard / Overview (visible when no container is selected or via tab) -->
+      <div class="dashboard-view" id="dashboardView">
+        <div class="detail-header">
+          <div class="detail-title">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--blue)">
+              <rect x="3" y="3" width="7" height="7"></rect>
+              <rect x="14" y="3" width="7" height="7"></rect>
+              <rect x="14" y="14" width="7" height="7"></rect>
+              <rect x="3" y="14" width="7" height="7"></rect>
+            </svg>
+            <h2>Dashboard Overview</h2>
+          </div>
+          <div class="detail-actions">
+            <button class="btn btn-secondary" id="btnRefreshDashboard">↺ Refresh</button>
+            <button class="btn btn-primary" id="btnStartAll">▶ Start All</button>
+            <button class="btn btn-warning" id="btnStopAll">⏹ Stop All</button>
+          </div>
+        </div>
+
+        <div class="dashboard-grid" id="dashboardGrid">
+          <!-- Populated by JS -->
+          <div class="no-data">Loading dashboard...</div>
+        </div>
       </div>
 
       <!-- Detail view (hidden until a container is selected) -->

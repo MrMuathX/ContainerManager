@@ -17,6 +17,8 @@ class ContainerSummary(BaseModel):
     ports: List[PortBinding]
     created: str
     uptime: Optional[str] = None
+    labels: Dict[str, str] = {}
+    exit_code: int = 0
 
 class ContainerStats(BaseModel):
     cpu_percent: float
