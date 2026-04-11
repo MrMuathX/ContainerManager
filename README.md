@@ -46,7 +46,7 @@ Environment variables are loaded from `.env` (see `.env.example`). Important opt
 
 | Variable | Description |
 |----------|-------------|
-| `DASHBOARD_PASSWORD` | Login password — **set a strong value** |
+| `DASHBOARD_PASSWORD` | Login password — **set a strong value** default is `admin`|
 | `MQTT_ENABLED` | `true` to publish HA discovery and states |
 | `MQTT_HOST`, `MQTT_PORT`, `MQTT_USER`, `MQTT_PASSWORD` | Mosquitto broker |
 | `HA_DISCOVERY_PREFIX` | Usually `homeassistant` |
