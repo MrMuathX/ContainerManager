@@ -105,6 +105,15 @@ function updateStat(elementId, value) {
   if (el) { el.textContent = value; animateValue(elementId); }
 }
 
+function bindClick(id, handler) {
+  const el = document.getElementById(id);
+  if (!el) {
+    console.warn(`[ContainerManager] Missing #${id}; click handler not bound.`);
+    return;
+  }
+  el.onclick = handler;
+}
+
 /* ─── System stats ─────────────────────────────────────────────────────────── */
 async function loadStats() {
   try {
@@ -985,20 +994,6 @@ async function importAppSettingsFile(file) {
   }
 }
 
-async function checkAppHealth() {
-  try {
-    const r = await api('/api/system/health');
-    const h = await r.json();
-    if (h.healthy) {
-      toast('App health: OK', 'success', 1800);
-    } else {
-      toast(`App health issue: ${h.docker?.error || 'unknown error'}`, 'error', 3500);
-    }
-  } catch (e) {
-    toast(`Health check failed: ${e.message}`, 'error');
-  }
-}
-
 /* ─── Helpers ──────────────────────────────────────────────────────────────── */
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -1011,10 +1006,10 @@ if (window.require) {
   require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.38.0/min/vs' } });
 }
 
-document.getElementById('btnRegistry').onclick = () => { document.getElementById('registryModal').style.display = 'flex'; };
-document.getElementById('btnCloseRegistry').onclick = () => { document.getElementById('registryModal').style.display = 'none'; };
+bindClick('btnRegistry',  () => { document.getElementById('registryModal').style.display = 'flex'; };
+bindClick('btnCloseRegistry',  () => { document.getElementById('registryModal').style.display = 'none'; };
 
-document.getElementById('btnSearchImage').onclick = async () => {
+bindClick('btnSearchImage',  async () => {
   const q = document.getElementById('imageSearchInput').value.trim();
   if (!q) return;
   const resultsContainer = document.getElementById('imageSearchResults');
@@ -1041,14 +1036,16 @@ document.getElementById('btnSearchImage').onclick = async () => {
 // File Upload Drag and Drop
 const uploadZone = document.getElementById('uploadZone');
 const uploadInput = document.getElementById('uploadInput');
-uploadZone.onclick = () => uploadInput.click();
-uploadZone.ondragover = (e) => { e.preventDefault(); uploadZone.style.borderColor = 'var(--blue)'; uploadZone.style.background = 'rgba(14, 165, 233, 0.1)'; };
-uploadZone.ondragleave = (e) => { e.preventDefault(); uploadZone.style.borderColor = ''; uploadZone.style.background = ''; };
-uploadZone.ondrop = (e) => {
-  e.preventDefault(); uploadZone.style.borderColor = ''; uploadZone.style.background = '';
-  if (e.dataTransfer.files.length > 0) handleFileUpload(e.dataTransfer.files[0]);
-};
-uploadInput.onchange = (e) => { if (e.target.files.length > 0) handleFileUpload(e.target.files[0]); };
+if (uploadZone && uploadInput) {
+  uploadZone.onclick = () => uploadInput.click();
+  uploadZone.ondragover = (e) => { e.preventDefault(); uploadZone.style.borderColor = 'var(--blue)'; uploadZone.style.background = 'rgba(14, 165, 233, 0.1)'; };
+  uploadZone.ondragleave = (e) => { e.preventDefault(); uploadZone.style.borderColor = ''; uploadZone.style.background = ''; };
+  uploadZone.ondrop = (e) => {
+    e.preventDefault(); uploadZone.style.borderColor = ''; uploadZone.style.background = '';
+    if (e.dataTransfer.files.length > 0) handleFileUpload(e.dataTransfer.files[0]);
+  };
+  uploadInput.onchange = (e) => { if (e.target.files.length > 0) handleFileUpload(e.target.files[0]); };
+}
 
 async function handleFileUpload(file) {
   const formData = new FormData();
@@ -1078,8 +1075,8 @@ function openRunConfig(imageName) {
   } else { monacoEditor.setValue(code); }
 }
 
-document.getElementById('btnCancelRunConfig').onclick = () => { document.getElementById('runConfigModal').style.display = 'none'; };
-document.getElementById('btnConfirmRunConfig').onclick = async () => {
+bindClick('btnCancelRunConfig',  () => { document.getElementById('runConfigModal').style.display = 'none'; };
+bindClick('btnConfirmRunConfig',  async () => {
   if (!monacoEditor) return;
   const configText = monacoEditor.getValue();
   try {
@@ -1094,7 +1091,7 @@ document.getElementById('btnConfirmRunConfig').onclick = async () => {
 };
 
 /* ─── AI Integration ────────────────────────────────────────────────────────── */
-document.getElementById('btnAI').onclick = async () => {
+bindClick('btnAI',  async () => {
   document.getElementById('aiSettingsModal').style.display = 'flex';
   try {
     const r = await api('/api/ai/config', 'GET');
@@ -1124,9 +1121,9 @@ document.getElementById('btnAI').onclick = async () => {
   } catch (e) { console.error("Could not load AI config", e); }
 };
 
-document.getElementById('btnCancelAIConfig').onclick = () => { document.getElementById('aiSettingsModal').style.display = 'none'; };
+bindClick('btnCancelAIConfig',  () => { document.getElementById('aiSettingsModal').style.display = 'none'; };
 
-document.getElementById('btnSaveAIConfig').onclick = async () => {
+bindClick('btnSaveAIConfig',  async () => {
   const config = {
     provider: document.getElementById('aiProvider').value,
     model: document.getElementById('aiModel').value,
@@ -1151,26 +1148,28 @@ let chatMinimized = false;
 let savedPanelState = {};   // stores size/position before minimize
 
 // Open chat panel (via bubble)
-aiBubble.onclick = () => {
-  chatMinimized = false;
-  aiBubble.style.display = 'none';
-  aiPanel.style.display = 'flex';
-  aiPanel.style.removeProperty('width');
-  aiPanel.style.removeProperty('height');
-  const ctxName = selectedDetail ? `${selectedDetail.name} (${selectedDetail.image})` : 'System';
-  document.getElementById('aiChatContextInfo').textContent = `Context: ${ctxName}`;
-  setTimeout(() => document.getElementById('aiChatInput').focus(), 50);
-};
+if (aiBubble) {
+  aiBubble.onclick = () => {
+    chatMinimized = false;
+    aiBubble.style.display = 'none';
+    aiPanel.style.display = 'flex';
+    aiPanel.style.removeProperty('width');
+    aiPanel.style.removeProperty('height');
+    const ctxName = selectedDetail ? `${selectedDetail.name} (${selectedDetail.image})` : 'System';
+    document.getElementById('aiChatContextInfo').textContent = `Context: ${ctxName}`;
+    setTimeout(() => document.getElementById('aiChatInput').focus(), 50);
+  };
+}
 
 // Close
-document.getElementById('btnCloseAIChat').onclick = () => {
+bindClick('btnCloseAIChat',  () => {
   aiPanel.style.display = 'none';
   aiBubble.style.display = 'flex';
   chatMinimized = false;
 };
 
 // Minimize to bubble
-document.getElementById('btnMinimizeChat').onclick = () => {
+bindClick('btnMinimizeChat',  () => {
   chatMinimized = true;
   savedPanelState = {
     left: aiPanel.style.left, top: aiPanel.style.top,
@@ -1183,14 +1182,16 @@ document.getElementById('btnMinimizeChat').onclick = () => {
 
 // Drag logic
 let dragging = false, dragOffX = 0, dragOffY = 0;
-aiDragHandle.addEventListener('mousedown', (e) => {
-  if (e.target.closest('.ai-chat-header-btns')) return;
-  dragging = true;
-  const rect = aiPanel.getBoundingClientRect();
-  dragOffX = e.clientX - rect.left;
-  dragOffY = e.clientY - rect.top;
-  document.body.style.userSelect = 'none';
-});
+if (aiDragHandle && aiPanel) {
+  aiDragHandle.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.ai-chat-header-btns')) return;
+    dragging = true;
+    const rect = aiPanel.getBoundingClientRect();
+    dragOffX = e.clientX - rect.left;
+    dragOffY = e.clientY - rect.top;
+    document.body.style.userSelect = 'none';
+  });
+}
 
 document.addEventListener('mousemove', (e) => {
   if (!dragging) return;
@@ -1210,15 +1211,17 @@ document.addEventListener('mouseup', () => {
 // Resize logic
 const aiResizeHandle = document.getElementById('aiChatResize');
 let resizing = false, resizeStartX = 0, resizeStartY = 0, resizeStartW = 0, resizeStartH = 0;
-aiResizeHandle.addEventListener('mousedown', (e) => {
-  resizing = true;
-  resizeStartX = e.clientX;
-  resizeStartY = e.clientY;
-  resizeStartW = aiPanel.offsetWidth;
-  resizeStartH = aiPanel.offsetHeight;
-  document.body.style.userSelect = 'none';
-  e.stopPropagation();
-});
+if (aiResizeHandle && aiPanel) {
+  aiResizeHandle.addEventListener('mousedown', (e) => {
+    resizing = true;
+    resizeStartX = e.clientX;
+    resizeStartY = e.clientY;
+    resizeStartW = aiPanel.offsetWidth;
+    resizeStartH = aiPanel.offsetHeight;
+    document.body.style.userSelect = 'none';
+    e.stopPropagation();
+  });
+}
 
 document.addEventListener('mousemove', (e) => {
   if (!resizing) return;
@@ -1231,7 +1234,7 @@ document.addEventListener('mousemove', (e) => {
 document.addEventListener('mouseup', () => { resizing = false; document.body.style.userSelect = ''; });
 
 // Download conversation
-document.getElementById('btnDownloadChat').onclick = () => {
+bindClick('btnDownloadChat',  () => {
   const history = document.getElementById('aiChatHistory');
   const name = selectedDetail ? selectedDetail.name : 'chat';
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>AI Chat – ${esc(name)}</title>
@@ -1253,7 +1256,7 @@ document.getElementById('btnDownloadChat').onclick = () => {
 };
 
 // Send AI chat message
-document.getElementById('btnSendAIChat').onclick = async () => {
+bindClick('btnSendAIChat',  async () => {
   const input = document.getElementById('aiChatInput');
   const prompt = input.value.trim();
   if (!prompt) return;
@@ -1312,8 +1315,7 @@ document.getElementById('aiChatInput').onkeydown = (e) => {
 };
 
 /* ─── MQTT Settings ────────────────────────────────────────────────────────── */
-document.getElementById('statMqtt').style.cursor = 'pointer';
-document.getElementById('statMqtt').onclick = async () => {
+bindClick('statMqtt', async () => {
   try {
     const r = await api('/api/system/system-config');
     if (r.ok) {
@@ -1332,9 +1334,9 @@ document.getElementById('statMqtt').onclick = async () => {
   } catch (e) { toast('Error loading System config: ' + e.message, 'error'); }
 };
 
-document.getElementById('btnCancelMQTTConfig').onclick = () => { document.getElementById('mqttSettingsModal').style.display = 'none'; };
+bindClick('btnCancelMQTTConfig',  () => { document.getElementById('mqttSettingsModal').style.display = 'none'; };
 
-document.getElementById('btnSaveMQTTConfig').onclick = async () => {
+bindClick('btnSaveMQTTConfig',  async () => {
   const payload = {
     dashboard_password: document.getElementById('sysDashboardPassword').value,
     app_url: document.getElementById('sysAppUrl').value,
@@ -1353,7 +1355,7 @@ document.getElementById('btnSaveMQTTConfig').onclick = async () => {
   } catch (e) { toast('Error saving System config', 'error'); }
 };
 
-document.getElementById('btnTestMQTTConfig').onclick = async () => {
+bindClick('btnTestMQTTConfig',  async () => {
   const btn = document.getElementById('btnTestMQTTConfig');
   const originalText = btn.textContent;
   btn.textContent = 'Testing...'; btn.disabled = true;
@@ -1478,7 +1480,7 @@ window.onmousedown = (e) => {
 };
 
 /* ─── Push to Registry ────────────────────────────────────────────────────── */
-document.getElementById('btnPushImage').onclick = async () => {
+bindClick('btnPushImage',  async () => {
   const image = document.getElementById('pushImageName').value.trim();
   const registry = document.getElementById('pushRegistryUrl').value.trim();
   const username = document.getElementById('pushUsername').value.trim();
@@ -1548,22 +1550,14 @@ document.addEventListener('DOMContentLoaded', () => {
   if (chkAll) chkAll.onclick = (e) => toggleSelectAll(e.target.checked);
 
   // Sort controls
-  document.getElementById('btnSortOrder').onclick = () => {
+  bindClick('btnSortOrder',  () => {
     sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
     document.getElementById('btnSortOrder').textContent = sortOrder === 'asc' ? '↑' : '↓';
     renderList();
   };
 
-  // Refresh button
-  document.getElementById('btnRefresh').onclick = async () => {
-    await Promise.all([loadContainers(), loadStats()]);
-    if (selectedId) await loadDetail(selectedId);
-    await checkAppHealth();
-    toast('Refreshed', 'info', 1500);
-  };
-
   // Logout
-  document.getElementById('btnLogout').onclick = async () => {
+  bindClick('btnLogout',  async () => {
     await api('/api/auth/logout', 'POST');
     window.location.href = '/login';
   };
@@ -1600,19 +1594,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Action buttons
   document.getElementById('btnRename').addEventListener('click', (e) => { e.preventDefault(); doRename(); });
-  document.getElementById('btnBackupSingle').onclick = () => downloadBackup(selectedId);
-  document.getElementById('btnExportImage').onclick = () => {
+  bindClick('btnBackupSingle',  () => downloadBackup(selectedId);
+  bindClick('btnExportImage',  () => {
     if (selectedId) window.location.href = `/api/containers/${selectedId}/export-image`;
   };
-  document.getElementById('btnStart').onclick = () => containerAction('start');
-  document.getElementById('btnStop').onclick = () => containerAction('stop');
-  document.getElementById('btnRestart').onclick = () => containerAction('restart');
-  document.getElementById('btnUpdate').onclick = () => updateContainer(selectedId);
-  document.getElementById('btnRemove').onclick = () => doRemove();
-  document.getElementById('btnExportExcel').onclick = exportListToExcel;
-  document.getElementById('btnBackupAll').onclick = downloadAllBackups;
+  bindClick('btnStart',  () => containerAction('start');
+  bindClick('btnStop',  () => containerAction('stop');
+  bindClick('btnRestart',  () => containerAction('restart');
+  bindClick('btnUpdate',  () => updateContainer(selectedId);
+  bindClick('btnRemove',  () => doRemove();
+  bindClick('btnExportExcel',  exportListToExcel;
+  bindClick('btnBackupAll',  downloadAllBackups;
   const importInput = document.getElementById('importBackupInput');
-  document.getElementById('btnImportBackup').onclick = () => {
+  bindClick('btnImportBackup',  () => {
     if (importInput) importInput.click();
   };
   if (importInput) {
@@ -1623,9 +1617,9 @@ document.addEventListener('DOMContentLoaded', () => {
       e.target.value = '';
     };
   }
-  document.getElementById('btnBackupSettings').onclick = backupAppSettings;
+  bindClick('btnBackupSettings',  backupAppSettings;
   const importSettingsInput = document.getElementById('importSettingsInput');
-  document.getElementById('btnImportSettings').onclick = () => {
+  bindClick('btnImportSettings',  () => {
     if (importSettingsInput) importSettingsInput.click();
   };
   if (importSettingsInput) {
@@ -1636,34 +1630,33 @@ document.addEventListener('DOMContentLoaded', () => {
       e.target.value = '';
     };
   }
-  document.getElementById('btnHealthCheck').onclick = checkAppHealth;
 
   // Ports
-  document.getElementById('btnPorts').onclick = loadPorts;
-  document.getElementById('btnClosePorts').onclick = () => { document.getElementById('portsModal').style.display = 'none'; };
+  bindClick('btnPorts',  loadPorts;
+  bindClick('btnClosePorts',  () => { document.getElementById('portsModal').style.display = 'none'; };
 
   // Logs toolbar
-  document.getElementById('btnClearLogs').onclick = () => { document.getElementById('logOutput').innerHTML = ''; };
-  document.getElementById('btnExportLogsCSV').onclick = () => { exportLogsToCSV(); };
+  bindClick('btnClearLogs',  () => { document.getElementById('logOutput').innerHTML = ''; };
+  bindClick('btnExportLogsCSV',  () => { exportLogsToCSV(); };
 
   // Update modal close
-  document.getElementById('btnCloseUpdate').onclick = () => { document.getElementById('updateModal').style.display = 'none'; };
+  bindClick('btnCloseUpdate',  () => { document.getElementById('updateModal').style.display = 'none'; };
 
   // Terminal reconnect & start
   const btnStartTerm = document.getElementById('btnStartTermSession');
   if (btnStartTerm) btnStartTerm.onclick = () => startTerminal();
-  document.getElementById('btnReconnectTerm').onclick = () => { connectTerminal(); };
+  bindClick('btnReconnectTerm',  () => { connectTerminal(); };
 
   // Dashboard buttons
-  document.getElementById('btnRefreshDashboard').onclick = () => loadContainers();
-  document.getElementById('btnStartAll').onclick = async () => {
+  bindClick('btnRefreshDashboard',  () => loadContainers();
+  bindClick('btnStartAll',  async () => {
     if (await confirm('Start All', 'Are you sure you want to start all containers?')) {
       toast('Starting all containers...', 'info');
       await api('/api/containers/bulk/start', 'POST', { ids: containers.map(c => c.id) });
       loadContainers();
     }
   };
-  document.getElementById('btnStopAll').onclick = async () => {
+  bindClick('btnStopAll',  async () => {
     if (await confirm('Stop All', 'Are you sure you want to stop all active containers?')) {
       toast('Stopping containers...', 'info');
       await api('/api/containers/bulk/stop', 'POST', { ids: containers.map(c => c.id) });
@@ -1672,7 +1665,7 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // --- Notification Settings ---
-  document.getElementById('btnNotifications').onclick = async () => {
+  bindClick('btnNotifications',  async () => {
     document.getElementById('notificationSettingsModal').style.display = 'flex';
     try {
       const r = await api('/api/system/notifications');
@@ -1705,11 +1698,11 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) { console.error("Could not load notif config", e); }
   };
 
-  document.getElementById('btnCancelNotifConfig').onclick = () => {
+  bindClick('btnCancelNotifConfig',  () => {
     document.getElementById('notificationSettingsModal').style.display = 'none';
   };
 
-  document.getElementById('btnSaveNotifConfig').onclick = async () => {
+  bindClick('btnSaveNotifConfig',  async () => {
     const enabled = Array.from(document.querySelectorAll('.provider-toggle'))
       .filter(c => c.checked).map(c => c.dataset.provider);
 

@@ -44,7 +44,7 @@
       <div class="stat-pill" id="statDisk"><span class="stat-label">Disk</span><span class="stat-val">—</span></div>
       <div class="stat-pill" id="statContainers"><span class="stat-label">Containers</span><span
           class="stat-val">—</span></div>
-      <div class="stat-pill" id="statMqtt"><span class="stat-label">MQTT</span><span id="mqttStatus"
+      <div class="stat-pill" id="statMqtt" style="cursor:pointer"><span class="stat-label">MQTT</span><span id="mqttStatus"
           class="stat-val status-down">Offline</span></div>
     </div>
     <div class="header-right">
@@ -73,29 +73,6 @@
         Import
       </button>
       <input type="file" id="importBackupInput" accept=".zip" style="display:none" />
-      <button class="btn btn-ghost" id="btnBackupSettings" title="Backup App Settings">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-          <polyline points="7 10 12 15 17 10" />
-          <line x1="12" y1="15" x2="12" y2="3" />
-        </svg>
-        App Backup
-      </button>
-      <button class="btn btn-ghost" id="btnImportSettings" title="Import App Settings">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-          <polyline points="17 8 12 3 7 8" />
-          <line x1="12" y1="3" x2="12" y2="15" />
-        </svg>
-        App Import
-      </button>
-      <input type="file" id="importSettingsInput" accept=".zip" style="display:none" />
-      <button class="btn btn-ghost" id="btnHealthCheck" title="Check App Health">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M22 12h-4l-3 9-6-18-3 9H2" />
-        </svg>
-        Health
-      </button>
       <button class="btn btn-ghost" id="btnRegistry" title="Image Registry">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
@@ -115,12 +92,6 @@
           <path d="M13.73 21a2 2 0 0 1-3.46 0" />
         </svg>
         Alerts
-      </button>
-      <button class="btn btn-ghost" id="btnRefresh" title="Refresh">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="23 4 23 10 17 10" />
-          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-        </svg>
       </button>
       <button class="btn btn-ghost" id="btnLogout" title="Logout">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -383,6 +354,7 @@
             <div id="labelsList" class="env-list"></div>
           </div>
         </div>
+      </div>
     </main>
   </div>
 
@@ -565,9 +537,16 @@
         <textarea id="aiSystemPrompt" class="modal-input" style="height: 80px; resize: vertical;"></textarea>
       </div>
 
-      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+      <div style="display: flex; justify-content: space-between; gap: 10px; margin-top: 20px; align-items: center;">
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-ghost" id="btnBackupSettings" title="Backup App Settings">App Backup</button>
+          <button class="btn btn-ghost" id="btnImportSettings" title="Import App Settings">App Import</button>
+          <input type="file" id="importSettingsInput" accept=".zip" style="display:none" />
+        </div>
+        <div style="display: flex; gap: 10px;">
         <button class="btn btn-ghost" id="btnCancelAIConfig">Cancel</button>
         <button class="btn btn-primary" id="btnSaveAIConfig">Save Settings</button>
+        </div>
       </div>
     </div>
   </div>
@@ -816,7 +795,7 @@
   <!-- Toast Container -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="app.js?v=7" defer></script>
+  <script src="app.js?v=8" defer></script>
 </body>
 
 </html>

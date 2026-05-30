@@ -538,7 +538,10 @@ def _container_backup_manifest(c: Container) -> dict:
     state = attrs.get("State", {})
     mounts = attrs.get("Mounts", []) or []
 
-    image_name = config.get("Image") or (c.image.tags[0] if c.image and c.image.tags else c.image.id)
+    image_name = config.get("Image")
+    if not image_name and c.image:
+        image_tags = getattr(c.image, "tags", []) or []
+        image_name = image_tags[0] if image_tags else getattr(c.image, "id", None)
 
     return {
         "format_version": 2,
@@ -653,6 +656,7 @@ def create_container_backup(container_id: str) -> io.BytesIO:
     manifest = _container_backup_manifest(c)
     mounts = manifest.get("config", {}).get("mounts", [])
     named_volumes = [m for m in mounts if m.get("type") == "volume" and m.get("name")]
+    warnings = []
 
     with tempfile.TemporaryDirectory(prefix="cm-backup-") as tmpdir:
         meta_dir = os.path.join(tmpdir, "meta")
@@ -667,7 +671,13 @@ def create_container_backup(container_id: str) -> io.BytesIO:
             f.write(get_container_compose(container_id))
 
         image_tar_path = os.path.join(tmpdir, "image.tar")
-        _write_stream_to_file(c.image.save(), image_tar_path)
+        try:
+            if c.image:
+                _write_stream_to_file(c.image.save(), image_tar_path)
+            else:
+                warnings.append("No image object found for this container; image.tar was skipped.")
+        except Exception as e:
+            warnings.append(f"Image export failed; image.tar was skipped: {e}")
 
         filesystem_tar_path = os.path.join(tmpdir, "filesystem.tar")
         _write_stream_to_file(c.export(), filesystem_tar_path)
@@ -675,22 +685,32 @@ def create_container_backup(container_id: str) -> io.BytesIO:
         for v in named_volumes:
             v_name = v["name"]
             v_tar_path = os.path.join(volumes_dir, f"{v_name}.tar")
-            _backup_named_volume(client, v_name, v_tar_path)
+            try:
+                _backup_named_volume(client, v_name, v_tar_path)
+            except Exception as e:
+                warnings.append(f"Volume backup failed for '{v_name}': {e}")
 
         info_lines = [
             f"Backup for container: {name}",
             f"Generated: {datetime.now().isoformat()}",
             "",
             "Included artifacts:",
-            "- image.tar (docker save output)",
             "- filesystem.tar (docker export output)",
             "- meta/manifest.json",
             "- meta/docker-compose.yaml",
         ]
+        if os.path.exists(image_tar_path):
+            info_lines.append("- image.tar (docker save output)")
+        else:
+            info_lines.append("- image.tar skipped")
         if named_volumes:
             info_lines.append("- volumes/*.tar (named volume snapshots)")
         else:
             info_lines.append("- volumes: none (or only bind mounts)")
+        if warnings:
+            info_lines.append("")
+            info_lines.append("Warnings:")
+            info_lines.extend([f"- {w}" for w in warnings])
         with open(os.path.join(meta_dir, "backup_info.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(info_lines))
 
