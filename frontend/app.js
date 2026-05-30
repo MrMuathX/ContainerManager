@@ -903,6 +903,102 @@ async function downloadAllBackups() {
   }
 }
 
+async function uploadBackupFile(file) {
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    toast('Please select a .zip backup file', 'error');
+    return;
+  }
+  const formData = new FormData();
+  formData.append('file', file);
+  toast(`Importing backup: ${file.name}...`, 'info');
+  try {
+    const r = await fetch('/api/containers/import', {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    });
+    if (r.status === 401) {
+      window.location.href = '/login';
+      return;
+    }
+    let payload = {};
+    try { payload = await r.json(); } catch (e) { payload = {}; }
+    if (!r.ok) {
+      const msg = payload.detail || payload.message || `Import failed (${r.status})`;
+      throw new Error(msg);
+    }
+    toast(payload.message || 'Backup imported successfully', 'success');
+    await loadContainers();
+    await loadStats();
+  } catch (e) {
+    toast(`Import failed: ${e.message}`, 'error');
+  }
+}
+
+async function backupAppSettings() {
+  try {
+    const link = document.createElement('a');
+    link.href = '/api/system/settings/backup';
+    link.setAttribute('download', '');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    toast('Preparing app settings backup...', 'info');
+  } catch (e) {
+    toast(`App settings backup failed: ${e.message}`, 'error');
+  }
+}
+
+async function importAppSettingsFile(file) {
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    toast('Please select a .zip settings backup file', 'error');
+    return;
+  }
+  const formData = new FormData();
+  formData.append('file', file);
+  toast(`Importing app settings: ${file.name}...`, 'info');
+  try {
+    const r = await fetch('/api/system/settings/import', {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    });
+    if (r.status === 401) {
+      window.location.href = '/login';
+      return;
+    }
+    let payload = {};
+    try { payload = await r.json(); } catch (e) { payload = {}; }
+    if (!r.ok) {
+      const msg = payload.detail || payload.message || `Import failed (${r.status})`;
+      throw new Error(msg);
+    }
+    toast(payload.message || 'App settings imported', 'success');
+    if (payload.restart_recommended) {
+      toast('Restart app/container to fully apply imported settings', 'info', 5000);
+    }
+    await loadStats();
+  } catch (e) {
+    toast(`Settings import failed: ${e.message}`, 'error');
+  }
+}
+
+async function checkAppHealth() {
+  try {
+    const r = await api('/api/system/health');
+    const h = await r.json();
+    if (h.healthy) {
+      toast('App health: OK', 'success', 1800);
+    } else {
+      toast(`App health issue: ${h.docker?.error || 'unknown error'}`, 'error', 3500);
+    }
+  } catch (e) {
+    toast(`Health check failed: ${e.message}`, 'error');
+  }
+}
+
 /* ─── Helpers ──────────────────────────────────────────────────────────────── */
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -1462,6 +1558,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnRefresh').onclick = async () => {
     await Promise.all([loadContainers(), loadStats()]);
     if (selectedId) await loadDetail(selectedId);
+    await checkAppHealth();
     toast('Refreshed', 'info', 1500);
   };
 
@@ -1514,6 +1611,32 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnRemove').onclick = () => doRemove();
   document.getElementById('btnExportExcel').onclick = exportListToExcel;
   document.getElementById('btnBackupAll').onclick = downloadAllBackups;
+  const importInput = document.getElementById('importBackupInput');
+  document.getElementById('btnImportBackup').onclick = () => {
+    if (importInput) importInput.click();
+  };
+  if (importInput) {
+    importInput.onchange = async (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        await uploadBackupFile(e.target.files[0]);
+      }
+      e.target.value = '';
+    };
+  }
+  document.getElementById('btnBackupSettings').onclick = backupAppSettings;
+  const importSettingsInput = document.getElementById('importSettingsInput');
+  document.getElementById('btnImportSettings').onclick = () => {
+    if (importSettingsInput) importSettingsInput.click();
+  };
+  if (importSettingsInput) {
+    importSettingsInput.onchange = async (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        await importAppSettingsFile(e.target.files[0]);
+      }
+      e.target.value = '';
+    };
+  }
+  document.getElementById('btnHealthCheck').onclick = checkAppHealth;
 
   // Ports
   document.getElementById('btnPorts').onclick = loadPorts;

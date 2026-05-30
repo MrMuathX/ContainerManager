@@ -1,5 +1,5 @@
 import asyncio
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
 from app.services import docker_service
@@ -138,20 +138,20 @@ def export_image(container_id: str):
 
 @router.get("/all/backup")
 def backup_all_containers():
-    """Download a master ZIP containing backups for ALL containers."""
+    """Download a master ZIP containing full backups for ALL containers."""
     try:
         import io
         import zipfile
         from datetime import datetime
         buffer = io.BytesIO()
-        all_c = docker_service.list_containers()
+        all_c = docker_service.list_containers(all_containers=True)
         
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
             for c_sum in all_c:
                 c_id = c_sum.id
                 c_name = c_sum.name
-                compose = docker_service.get_container_compose(c_id)
-                z.writestr(f"{c_name}/docker-compose.yaml", compose)
+                backup_buffer = docker_service.create_container_backup(c_id)
+                z.writestr(f"{c_name}/{c_name}_backup.zip", backup_buffer.getvalue())
                 
             z.writestr("manifest.txt", f"Master backup generated at {datetime.now().isoformat()}\nContainers: {len(all_c)}")
             
@@ -161,6 +161,29 @@ def backup_all_containers():
             media_type="application/zip",
             headers={"Content-Disposition": "attachment; filename=all_containers_backup.zip"}
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/import", response_model=ActionResponse)
+async def import_backup(
+    file: UploadFile = File(...),
+    container_name: Optional[str] = Form(None),
+):
+    """Import a full container backup ZIP and recreate container + data."""
+    try:
+        filename = (file.filename or "").lower()
+        if not filename.endswith(".zip"):
+            raise HTTPException(status_code=400, detail="Backup file must be a .zip archive.")
+        backup_bytes = await file.read()
+        if not backup_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded backup file is empty.")
+        result = docker_service.import_container_backup(backup_bytes, requested_name=container_name)
+        if not result.success:
+            raise HTTPException(status_code=400, detail=result.message)
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

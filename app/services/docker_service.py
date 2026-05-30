@@ -1,6 +1,7 @@
 import docker
 import asyncio
 import json
+import os
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
 from docker.models.containers import Container
@@ -8,6 +9,7 @@ from docker.errors import DockerException, NotFound, APIError
 import io
 import zipfile
 import tarfile
+import tempfile
 import yaml  # will check if available, else use custom dump
 
 from app.models import (
@@ -458,6 +460,116 @@ def export_container_image(container_id: str):
         raise ValueError("Container has no associated image.")
     return image.save()
 
+
+def _ensure_helper_image(client: docker.DockerClient) -> None:
+    """Ensure helper image exists for volume backup/restore."""
+    try:
+        client.images.get("busybox:latest")
+    except docker.errors.ImageNotFound:
+        client.images.pull("busybox:latest")
+
+
+def _write_stream_to_file(stream, target_path: str) -> None:
+    with open(target_path, "wb") as f:
+        for chunk in stream:
+            if chunk:
+                f.write(chunk)
+
+
+def _backup_named_volume(client: docker.DockerClient, volume_name: str, target_path: str) -> None:
+    _ensure_helper_image(client)
+    helper = client.containers.create(
+        "busybox:latest",
+        command=["sh", "-c", "sleep 300"],
+        volumes={volume_name: {"bind": "/volume", "mode": "ro"}},
+    )
+    try:
+        helper.start()
+        exec_id = client.api.exec_create(
+            helper.id,
+            cmd=["tar", "-cf", "-", "-C", "/volume", "."],
+        )["Id"]
+        stream = client.api.exec_start(exec_id, stream=True)
+        _write_stream_to_file(stream, target_path)
+        inspect = client.api.exec_inspect(exec_id)
+        if inspect.get("ExitCode", 1) != 0:
+            raise RuntimeError(f"Failed to backup volume '{volume_name}'.")
+    finally:
+        try:
+            helper.remove(force=True)
+        except Exception:
+            pass
+
+
+def _restore_named_volume(client: docker.DockerClient, volume_name: str, backup_tar_path: str) -> None:
+    _ensure_helper_image(client)
+    try:
+        client.volumes.get(volume_name)
+    except docker.errors.NotFound:
+        client.volumes.create(name=volume_name)
+
+    helper = client.containers.create(
+        "busybox:latest",
+        command=["sh", "-c", "sleep 300"],
+        volumes={volume_name: {"bind": "/volume", "mode": "rw"}},
+    )
+    try:
+        helper.start()
+        with open(backup_tar_path, "rb") as f:
+            ok = helper.put_archive("/volume", f.read())
+        if not ok:
+            raise RuntimeError(f"Failed to restore volume '{volume_name}'.")
+    finally:
+        try:
+            helper.remove(force=True)
+        except Exception:
+            pass
+
+
+def _sanitize_image_name_for_tag(image_name: str) -> str:
+    safe = image_name.replace("/", "_").replace(":", "_").replace("@", "_")
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in safe).strip("._-") or "container"
+
+
+def _container_backup_manifest(c: Container) -> dict:
+    attrs = c.attrs
+    config = attrs.get("Config", {})
+    host_config = attrs.get("HostConfig", {})
+    state = attrs.get("State", {})
+    mounts = attrs.get("Mounts", []) or []
+
+    image_name = config.get("Image") or (c.image.tags[0] if c.image and c.image.tags else c.image.id)
+
+    return {
+        "format_version": 2,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "container_id": c.id,
+        "container_name": c.name.lstrip("/"),
+        "image_name": image_name,
+        "state": {"status": state.get("Status", c.status), "was_running": c.status == "running"},
+        "config": {
+            "env": config.get("Env") or [],
+            "labels": config.get("Labels") or {},
+            "cmd": config.get("Cmd"),
+            "entrypoint": config.get("Entrypoint"),
+            "working_dir": config.get("WorkingDir"),
+            "user": config.get("User"),
+            "restart_policy": host_config.get("RestartPolicy") or {"Name": "no"},
+            "network_mode": host_config.get("NetworkMode", "bridge"),
+            "port_bindings": host_config.get("PortBindings") or {},
+            "mounts": [
+                {
+                    "type": m.get("Type"),
+                    "name": m.get("Name"),
+                    "source": m.get("Source"),
+                    "destination": m.get("Destination"),
+                    "rw": m.get("RW", True),
+                }
+                for m in mounts
+            ],
+        },
+    }
+
 def get_container_compose(container_id: str) -> str:
     """Reconstruct a docker-compose.yaml equivalent from container inspect data."""
     client = _get_client()
@@ -528,27 +640,174 @@ def get_container_compose(container_id: str) -> str:
 
 def create_container_backup(container_id: str) -> io.BytesIO:
     """
-    Creates a ZIP containing the compose file and metadata.
-    Data migration is complex; we provide the compose config as the primary 'backup'.
+    Creates a full portable backup:
+    - container config/metadata
+    - image tar (docker save)
+    - writable container filesystem tar (docker export)
+    - named volume snapshots
     """
     client = _get_client()
     c = client.containers.get(container_id)
     name = c.name.lstrip("/")
-    
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
-        # Add compose file
-        compose = get_container_compose(container_id)
-        z.writestr(f"{name}/docker-compose.yaml", compose)
-        
-        # Add a placeholder/info file about volumes
-        info = [f"Backup for container: {name}", f"Generated: {datetime.now().isoformat()}"]
-        mounts = c.attrs.get("Mounts", [])
-        if mounts:
-            info.append("\nVolumes detected:")
-            for m in mounts:
-                info.append(f"- {m.get('Type')}: {m.get('Source')} -> {m.get('Destination')}")
-        z.writestr(f"{name}/backup_info.txt", "\n".join(info))
-        
+
+    manifest = _container_backup_manifest(c)
+    mounts = manifest.get("config", {}).get("mounts", [])
+    named_volumes = [m for m in mounts if m.get("type") == "volume" and m.get("name")]
+
+    with tempfile.TemporaryDirectory(prefix="cm-backup-") as tmpdir:
+        meta_dir = os.path.join(tmpdir, "meta")
+        volumes_dir = os.path.join(tmpdir, "volumes")
+        os.makedirs(meta_dir, exist_ok=True)
+        os.makedirs(volumes_dir, exist_ok=True)
+
+        with open(os.path.join(meta_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+
+        with open(os.path.join(meta_dir, "docker-compose.yaml"), "w", encoding="utf-8") as f:
+            f.write(get_container_compose(container_id))
+
+        image_tar_path = os.path.join(tmpdir, "image.tar")
+        _write_stream_to_file(c.image.save(), image_tar_path)
+
+        filesystem_tar_path = os.path.join(tmpdir, "filesystem.tar")
+        _write_stream_to_file(c.export(), filesystem_tar_path)
+
+        for v in named_volumes:
+            v_name = v["name"]
+            v_tar_path = os.path.join(volumes_dir, f"{v_name}.tar")
+            _backup_named_volume(client, v_name, v_tar_path)
+
+        info_lines = [
+            f"Backup for container: {name}",
+            f"Generated: {datetime.now().isoformat()}",
+            "",
+            "Included artifacts:",
+            "- image.tar (docker save output)",
+            "- filesystem.tar (docker export output)",
+            "- meta/manifest.json",
+            "- meta/docker-compose.yaml",
+        ]
+        if named_volumes:
+            info_lines.append("- volumes/*.tar (named volume snapshots)")
+        else:
+            info_lines.append("- volumes: none (or only bind mounts)")
+        with open(os.path.join(meta_dir, "backup_info.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(info_lines))
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
+            for root, _, files in os.walk(tmpdir):
+                for file_name in files:
+                    abs_path = os.path.join(root, file_name)
+                    rel_path = os.path.relpath(abs_path, tmpdir)
+                    z.write(abs_path, rel_path)
+
     buffer.seek(0)
     return buffer
+
+
+def import_container_backup(backup_bytes: bytes, requested_name: Optional[str] = None) -> ActionResponse:
+    """
+    Restores a container from a backup ZIP produced by create_container_backup.
+    """
+    client = _get_client()
+    try:
+        with tempfile.TemporaryDirectory(prefix="cm-import-") as tmpdir:
+            backup_zip_path = os.path.join(tmpdir, "backup.zip")
+            with open(backup_zip_path, "wb") as f:
+                f.write(backup_bytes)
+
+            with zipfile.ZipFile(backup_zip_path, "r") as z:
+                z.extractall(tmpdir)
+
+            manifest_path = os.path.join(tmpdir, "meta", "manifest.json")
+            if not os.path.exists(manifest_path):
+                return ActionResponse(success=False, message="Invalid backup: missing meta/manifest.json")
+
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+
+            cfg = manifest.get("config", {})
+            container_name = requested_name or manifest.get("container_name") or f"imported-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            was_running = bool(manifest.get("state", {}).get("was_running", True))
+
+            # Avoid name collisions.
+            try:
+                client.containers.get(container_name)
+                container_name = f"{container_name}-imported-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            except docker.errors.NotFound:
+                pass
+
+            image_tar_path = os.path.join(tmpdir, "image.tar")
+            if os.path.exists(image_tar_path):
+                with open(image_tar_path, "rb") as f:
+                    client.images.load(f.read())
+
+            # Prefer imported writable filesystem image to preserve mutable container state.
+            filesystem_tar_path = os.path.join(tmpdir, "filesystem.tar")
+            image_name = manifest.get("image_name")
+            if os.path.exists(filesystem_tar_path):
+                with open(filesystem_tar_path, "rb") as f:
+                    imported_ref = client.images.import_image_from_data(f.read())
+                imported_image = client.images.get(imported_ref)
+                tagged_repo = f"cm-import/{_sanitize_image_name_for_tag(container_name)}"
+                tagged_tag = datetime.now().strftime("%Y%m%d%H%M%S")
+                imported_image.tag(repository=tagged_repo, tag=tagged_tag)
+                image_name = f"{tagged_repo}:{tagged_tag}"
+
+            if not image_name:
+                return ActionResponse(success=False, message="Backup does not contain a valid image reference.")
+
+            mounts = cfg.get("mounts", [])
+            bind_specs = []
+            for m in mounts:
+                m_type = m.get("type")
+                dest = m.get("destination")
+                rw = m.get("rw", True)
+                if m_type == "volume" and m.get("name") and dest:
+                    v_name = m["name"]
+                    v_tar_path = os.path.join(tmpdir, "volumes", f"{v_name}.tar")
+                    if os.path.exists(v_tar_path):
+                        _restore_named_volume(client, v_name, v_tar_path)
+                    mode = "rw" if rw else "ro"
+                    bind_specs.append(f"{v_name}:{dest}:{mode}")
+                elif m_type == "bind" and m.get("source") and dest:
+                    mode = "rw" if rw else "ro"
+                    bind_specs.append(f"{m['source']}:{dest}:{mode}")
+
+            raw_port_bindings = cfg.get("port_bindings") or {}
+            requested_ports = {}
+            for container_port, bindings in raw_port_bindings.items():
+                if not bindings:
+                    continue
+                requested_ports[container_port] = [
+                    (b.get("HostIp", ""), b.get("HostPort", ""))
+                    for b in bindings
+                ]
+            resolved_ports = resolve_port_conflicts(client, requested_ports) if requested_ports else {}
+
+            new_container = client.containers.run(
+                image_name,
+                name=container_name,
+                detach=True,
+                environment=cfg.get("env") or [],
+                labels=cfg.get("labels") or {},
+                command=cfg.get("cmd"),
+                entrypoint=cfg.get("entrypoint"),
+                working_dir=cfg.get("working_dir") or None,
+                user=cfg.get("user") or None,
+                restart_policy=cfg.get("restart_policy") or {"Name": "no"},
+                network_mode=cfg.get("network_mode") or "bridge",
+                ports=resolved_ports,
+                volumes=bind_specs or None,
+            )
+
+            if not was_running:
+                new_container.stop(timeout=5)
+
+            return ActionResponse(
+                success=True,
+                message=f"Backup imported as container '{container_name}' ({new_container.short_id}).",
+            )
+    except Exception as e:
+        return ActionResponse(success=False, message=f"Import failed: {e}")

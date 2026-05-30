@@ -13,7 +13,8 @@
 | **Terminal** | Interactive PTY in the container (xterm.js + WebSocket) |
 | **Images** | Push local images to a registry with progress feedback |
 | **Updates** | Pull latest image and recreate the container |
-| **Backups** | Per-container or multi-select ZIP backups |
+| **Backups** | Full per-container or multi-select ZIP backups (image + writable layer + named volumes) with import/restore |
+| **App settings backup** | Export/import app settings as ZIP (`system`, notifications, monitoring, AI config) |
 | **Auth** | Cookie-based login (password from env / system config) |
 | **Home Assistant** | MQTT discovery as Switch entities; start/stop from HA |
 | **AI assistant** | Context-aware chat (OpenAI-compatible APIs) for the selected container |
