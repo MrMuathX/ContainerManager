@@ -1,8 +1,10 @@
 import asyncio
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
+import os
+import tempfile
+from fastapi import APIRouter, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi.responses import FileResponse, StreamingResponse
 
-from app.services import docker_service
+from app.services import backup_jobs, docker_service
 from app.models import ContainerSummary, ContainerDetail, ActionResponse, ContainerMonitoringConfig
 from pydantic import BaseModel
 from typing import Dict, List, Optional
@@ -100,22 +102,83 @@ async def pull_image(container_id: str):
     return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
-@router.get("/{container_id}/backup")
-def backup_container(container_id: str):
-    """Download a ZIP backup of a specific container."""
+@router.post("/{container_id}/backup/prepare")
+def prepare_container_backup(container_id: str):
+    """Start a background backup job. Poll /jobs/{job_id} then download when ready."""
     try:
-        from app.services import docker_service
-        buffer = docker_service.create_container_backup(container_id)
-        # Get name for filename
         c = docker_service.get_container_detail(container_id)
-        filename = f"{c.name}_backup.zip"
-        return StreamingResponse(
-            buffer,
-            media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
+        job_id = backup_jobs.start_container_backup_job(container_id, c.name)
+        return {"job_id": job_id, "status": "running"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/jobs/{job_id}")
+def container_backup_job_status(job_id: str):
+    job = backup_jobs.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Backup job not found.")
+    return {
+        "status": job["status"],
+        "error": job.get("error"),
+        "filename": job.get("filename"),
+    }
+
+
+@router.get("/jobs/{job_id}/download")
+def download_container_backup_job(job_id: str, background_tasks: BackgroundTasks):
+    job = backup_jobs.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Backup job not found.")
+    if job["status"] == "running":
+        raise HTTPException(status_code=409, detail="Backup is still running.")
+    if job["status"] == "error":
+        raise HTTPException(status_code=500, detail=job.get("error") or "Backup failed.")
+    path = job.get("path")
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=410, detail="Backup file expired or missing.")
+
+    background_tasks.add_task(backup_jobs.release_job, job_id)
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=job.get("filename") or "container_backup.zip",
+    )
+
+
+@router.get("/{container_id}/backup")
+async def backup_container(container_id: str):
+    """Download a ZIP backup of a specific container (streams from disk after build)."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+    try:
+        c = docker_service.get_container_detail(container_id)
+        filename = f"{c.name}_backup.zip"
+        await asyncio.to_thread(docker_service.create_container_backup_file, container_id, tmp_path)
+    except Exception as e:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail=str(e))
+
+    def iterfile():
+        try:
+            with open(tmp_path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    yield chunk
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    return StreamingResponse(
+        iterfile(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 @router.get("/{container_id}/export-image")
@@ -137,32 +200,58 @@ def export_image(container_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/all/backup")
-def backup_all_containers():
+async def backup_all_containers():
     """Download a master ZIP containing full backups for ALL containers."""
+    import zipfile
+    from datetime import datetime
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    master_path = tmp.name
+    tmp.close()
     try:
-        import io
-        import zipfile
-        from datetime import datetime
-        buffer = io.BytesIO()
         all_c = docker_service.list_containers(all_containers=True)
-        
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
+        with zipfile.ZipFile(master_path, "w", zipfile.ZIP_DEFLATED) as z:
             for c_sum in all_c:
                 c_id = c_sum.id
                 c_name = c_sum.name
-                backup_buffer = docker_service.create_container_backup(c_id)
-                z.writestr(f"{c_name}/{c_name}_backup.zip", backup_buffer.getvalue())
-                
-            z.writestr("manifest.txt", f"Master backup generated at {datetime.now().isoformat()}\nContainers: {len(all_c)}")
-            
-        buffer.seek(0)
-        return StreamingResponse(
-            buffer,
-            media_type="application/zip",
-            headers={"Content-Disposition": "attachment; filename=all_containers_backup.zip"}
-        )
+                fd, child_path = tempfile.mkstemp(suffix=".zip", prefix="cm-backup-")
+                os.close(fd)
+                try:
+                    await asyncio.to_thread(docker_service.create_container_backup_file, c_id, child_path)
+                    z.write(child_path, f"{c_name}/{c_name}_backup.zip")
+                finally:
+                    try:
+                        os.unlink(child_path)
+                    except OSError:
+                        pass
+
+            z.writestr(
+                "manifest.txt",
+                f"Master backup generated at {datetime.now().isoformat()}\nContainers: {len(all_c)}",
+            )
     except Exception as e:
+        try:
+            os.unlink(master_path)
+        except OSError:
+            pass
         raise HTTPException(status_code=500, detail=str(e))
+
+    def iterfile():
+        try:
+            with open(master_path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    yield chunk
+        finally:
+            try:
+                os.unlink(master_path)
+            except OSError:
+                pass
+
+    return StreamingResponse(
+        iterfile(),
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=all_containers_backup.zip"},
+    )
 
 
 @router.post("/import", response_model=ActionResponse)

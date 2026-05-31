@@ -862,44 +862,111 @@ function exportListToExcel() {
 }
 
 /* ─── Backup Logic ─────────────────────────────────────────────────────────── */
-function downloadBackup(id) {
+async function fetchContainerBackupBlob(id, onProgress) {
+  const startRes = await fetch(`/api/containers/${id}/backup/prepare`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+  if (startRes.status === 401) {
+    window.location.href = '/login';
+    throw new Error('Unauthorized');
+  }
+  if (!startRes.ok) {
+    let detail = startRes.statusText;
+    try {
+      const err = await startRes.json();
+      detail = err.detail || detail;
+    } catch (e) { /* ignore */ }
+    throw new Error(detail);
+  }
+  const { job_id: jobId } = await startRes.json();
+  if (onProgress) onProgress('running');
+
+  for (;;) {
+    await new Promise(r => setTimeout(r, 2000));
+    const stRes = await fetch(`/api/containers/jobs/${jobId}`, { credentials: 'include' });
+    if (!stRes.ok) throw new Error('Failed to check backup status');
+    const data = await stRes.json();
+    if (data.status === 'error') throw new Error(data.error || 'Backup failed');
+    if (data.status === 'done') {
+      const dlRes = await fetch(`/api/containers/jobs/${jobId}/download`, { credentials: 'include' });
+      if (!dlRes.ok) {
+        let detail = dlRes.statusText;
+        try {
+          const err = await dlRes.json();
+          detail = err.detail || detail;
+        } catch (e) { /* ignore */ }
+        throw new Error(detail);
+      }
+      return { blob: await dlRes.blob(), filename: data.filename || 'container_backup.zip' };
+    }
+    if (onProgress) onProgress('running');
+  }
+}
+
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function downloadBackup(id) {
   if (!id) return;
-  const link = document.createElement('a');
-  link.href = `/api/containers/${id}/backup`;
-  link.setAttribute('download', '');
-  document.body.appendChild(link); link.click(); document.body.removeChild(link);
-  toast('Starting backup download...', 'info');
+  const c = containers.find(x => x.id === id);
+  const name = c ? c.name : id;
+  toast(`Building backup for ${name}…`, 'info', 300000);
+  try {
+    const { blob, filename } = await fetchContainerBackupBlob(id);
+    triggerBlobDownload(blob, filename);
+    toast('Backup downloaded', 'success');
+  } catch (e) {
+    toast(`Backup failed: ${e.message}`, 'error');
+  }
 }
 
 async function downloadAllBackups() {
   if (selectedCheckboxIds.size > 0) {
-    // Selective backup — download each individually and zip in browser
-    toast(`Preparing backup for ${selectedCheckboxIds.size} container(s)...`, 'info');
+    toast(`Preparing backup for ${selectedCheckboxIds.size} container(s)…`, 'info', 600000);
     const zip = new JSZip();
     const ids = Array.from(selectedCheckboxIds);
     for (const id of ids) {
       try {
         const c = containers.find(x => x.id === id);
         const name = c ? c.name : id;
-        const r = await fetch(`/api/containers/${id}/backup`, { credentials: 'include' });
-        if (!r.ok) { toast(`Backup failed for ${name}`, 'error'); continue; }
-        const buf = await r.arrayBuffer();
-        zip.file(`${name}_backup.zip`, buf);
-      } catch (e) { toast(`Error backing up ${id}: ${e.message}`, 'error'); }
+        const { blob } = await fetchContainerBackupBlob(id, () => {
+          toast(`Still building backup for ${name}…`, 'info', 300000);
+        });
+        zip.file(`${name}_backup.zip`, blob);
+      } catch (e) {
+        toast(`Error backing up ${id}: ${e.message}`, 'error');
+      }
     }
     const blob = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `selected_containers_backup.zip`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    triggerBlobDownload(blob, 'selected_containers_backup.zip');
     toast('Selected backup ready!', 'success');
   } else {
-    const link = document.createElement('a');
-    link.href = `/api/containers/all/backup`;
-    link.setAttribute('download', '');
-    document.body.appendChild(link); link.click(); document.body.removeChild(link);
-    toast('Preparing master backup ZIP...', 'info');
+    toast('Building master backup for all containers (this may take a while)…', 'info', 600000);
+    try {
+      const r = await fetch('/api/containers/all/backup', { credentials: 'include' });
+      if (!r.ok) {
+        let detail = r.statusText;
+        try {
+          const err = await r.json();
+          detail = err.detail || detail;
+        } catch (e) { /* ignore */ }
+        throw new Error(detail);
+      }
+      const blob = await r.blob();
+      triggerBlobDownload(blob, 'all_containers_backup.zip');
+      toast('Master backup downloaded', 'success');
+    } catch (e) {
+      toast(`Master backup failed: ${e.message}`, 'error');
+    }
   }
 }
 
@@ -937,14 +1004,20 @@ async function uploadBackupFile(file) {
 }
 
 async function backupAppSettings() {
+  toast('Preparing app settings backup…', 'info', 60000);
   try {
-    const link = document.createElement('a');
-    link.href = '/api/system/settings/backup';
-    link.setAttribute('download', '');
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    toast('Preparing app settings backup...', 'info');
+    const r = await fetch('/api/system/settings/backup', { credentials: 'include' });
+    if (!r.ok) {
+      let detail = r.statusText;
+      try {
+        const err = await r.json();
+        detail = err.detail || detail;
+      } catch (e) { /* ignore */ }
+      throw new Error(detail);
+    }
+    const blob = await r.blob();
+    triggerBlobDownload(blob, 'app_settings_backup.zip');
+    toast('App settings backup downloaded', 'success');
   } catch (e) {
     toast(`App settings backup failed: ${e.message}`, 'error');
   }

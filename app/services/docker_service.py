@@ -641,13 +641,25 @@ def get_container_compose(container_id: str) -> str:
     return "\n".join(lines)
 
 
-def create_container_backup(container_id: str) -> io.BytesIO:
+def _pack_backup_zip(source_dir: str, zip_path: str) -> None:
+    """Pack backup workspace into a ZIP. Large tar blobs use STORED (already compressed)."""
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        for root, _, files in os.walk(source_dir):
+            for file_name in files:
+                abs_path = os.path.join(root, file_name)
+                rel_path = os.path.relpath(abs_path, source_dir)
+                compress = zipfile.ZIP_STORED if file_name.endswith(".tar") else zipfile.ZIP_DEFLATED
+                z.write(abs_path, rel_path, compress_type=compress)
+
+
+def _build_container_backup_workspace(container_id: str, tmpdir: str) -> tuple[str, list[str]]:
     """
-    Creates a full portable backup:
+    Build backup artifacts in tmpdir:
     - container config/metadata
-    - image tar (docker save)
     - writable container filesystem tar (docker export)
     - named volume snapshots
+
+    image.tar is omitted; import restores from filesystem.tar (faster, smaller backups).
     """
     client = _get_client()
     c = client.containers.get(container_id)
@@ -658,72 +670,75 @@ def create_container_backup(container_id: str) -> io.BytesIO:
     named_volumes = [m for m in mounts if m.get("type") == "volume" and m.get("name")]
     warnings = []
 
-    with tempfile.TemporaryDirectory(prefix="cm-backup-") as tmpdir:
-        meta_dir = os.path.join(tmpdir, "meta")
-        volumes_dir = os.path.join(tmpdir, "volumes")
-        os.makedirs(meta_dir, exist_ok=True)
-        os.makedirs(volumes_dir, exist_ok=True)
+    meta_dir = os.path.join(tmpdir, "meta")
+    volumes_dir = os.path.join(tmpdir, "volumes")
+    os.makedirs(meta_dir, exist_ok=True)
+    os.makedirs(volumes_dir, exist_ok=True)
 
-        with open(os.path.join(meta_dir, "manifest.json"), "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2)
+    with open(os.path.join(meta_dir, "manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
 
-        with open(os.path.join(meta_dir, "docker-compose.yaml"), "w", encoding="utf-8") as f:
-            f.write(get_container_compose(container_id))
+    with open(os.path.join(meta_dir, "docker-compose.yaml"), "w", encoding="utf-8") as f:
+        f.write(get_container_compose(container_id))
 
-        image_tar_path = os.path.join(tmpdir, "image.tar")
+    filesystem_tar_path = os.path.join(tmpdir, "filesystem.tar")
+    _write_stream_to_file(c.export(), filesystem_tar_path)
+
+    for v in named_volumes:
+        v_name = v["name"]
+        v_tar_path = os.path.join(volumes_dir, f"{v_name}.tar")
         try:
-            if c.image:
-                _write_stream_to_file(c.image.save(), image_tar_path)
-            else:
-                warnings.append("No image object found for this container; image.tar was skipped.")
+            _backup_named_volume(client, v_name, v_tar_path)
         except Exception as e:
-            warnings.append(f"Image export failed; image.tar was skipped: {e}")
+            warnings.append(f"Volume backup failed for '{v_name}': {e}")
 
-        filesystem_tar_path = os.path.join(tmpdir, "filesystem.tar")
-        _write_stream_to_file(c.export(), filesystem_tar_path)
+    info_lines = [
+        f"Backup for container: {name}",
+        f"Generated: {datetime.now().isoformat()}",
+        "",
+        "Included artifacts:",
+        "- filesystem.tar (docker export output)",
+        "- meta/manifest.json",
+        "- meta/docker-compose.yaml",
+        "- image.tar omitted (restore uses filesystem export)",
+    ]
+    if named_volumes:
+        info_lines.append("- volumes/*.tar (named volume snapshots)")
+    else:
+        info_lines.append("- volumes: none (or only bind mounts)")
+    if warnings:
+        info_lines.append("")
+        info_lines.append("Warnings:")
+        info_lines.extend([f"- {w}" for w in warnings])
+    with open(os.path.join(meta_dir, "backup_info.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(info_lines))
 
-        for v in named_volumes:
-            v_name = v["name"]
-            v_tar_path = os.path.join(volumes_dir, f"{v_name}.tar")
-            try:
-                _backup_named_volume(client, v_name, v_tar_path)
-            except Exception as e:
-                warnings.append(f"Volume backup failed for '{v_name}': {e}")
+    return name, warnings
 
-        info_lines = [
-            f"Backup for container: {name}",
-            f"Generated: {datetime.now().isoformat()}",
-            "",
-            "Included artifacts:",
-            "- filesystem.tar (docker export output)",
-            "- meta/manifest.json",
-            "- meta/docker-compose.yaml",
-        ]
-        if os.path.exists(image_tar_path):
-            info_lines.append("- image.tar (docker save output)")
-        else:
-            info_lines.append("- image.tar skipped")
-        if named_volumes:
-            info_lines.append("- volumes/*.tar (named volume snapshots)")
-        else:
-            info_lines.append("- volumes: none (or only bind mounts)")
-        if warnings:
-            info_lines.append("")
-            info_lines.append("Warnings:")
-            info_lines.extend([f"- {w}" for w in warnings])
-        with open(os.path.join(meta_dir, "backup_info.txt"), "w", encoding="utf-8") as f:
-            f.write("\n".join(info_lines))
 
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
-            for root, _, files in os.walk(tmpdir):
-                for file_name in files:
-                    abs_path = os.path.join(root, file_name)
-                    rel_path = os.path.relpath(abs_path, tmpdir)
-                    z.write(abs_path, rel_path)
+def create_container_backup_file(container_id: str, zip_path: str) -> str:
+    """Write a full container backup ZIP to disk. Returns the container name."""
+    with tempfile.TemporaryDirectory(prefix="cm-backup-") as tmpdir:
+        name, _ = _build_container_backup_workspace(container_id, tmpdir)
+        _pack_backup_zip(tmpdir, zip_path)
+    return name
 
-    buffer.seek(0)
-    return buffer
+
+def create_container_backup(container_id: str) -> io.BytesIO:
+    """Create a full portable backup ZIP in memory (prefer create_container_backup_file for large containers)."""
+    fd, path = tempfile.mkstemp(suffix=".zip", prefix="cm-backup-")
+    os.close(fd)
+    try:
+        create_container_backup_file(container_id, path)
+        with open(path, "rb") as f:
+            buffer = io.BytesIO(f.read())
+        buffer.seek(0)
+        return buffer
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def import_container_backup(backup_bytes: bytes, requested_name: Optional[str] = None) -> ActionResponse:
