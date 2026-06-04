@@ -3,8 +3,9 @@ import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from app.services import docker_service
 
@@ -13,6 +14,10 @@ BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
 _lock = threading.Lock()
 _jobs: dict[str, dict[str, Any]] = {}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _cleanup_old_jobs(max_age_sec: int = 3600) -> None:
@@ -32,6 +37,37 @@ def _cleanup_old_jobs(max_age_sec: int = 3600) -> None:
                     pass
 
 
+def job_log(job_id: str, message: str, level: str = "info") -> None:
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return
+        job["log_seq"] = job.get("log_seq", 0) + 1
+        job["logs"].append({
+            "seq": job["log_seq"],
+            "ts": _now_iso(),
+            "level": level,
+            "message": message,
+        })
+
+
+def job_progress(job_id: str, pct: int, step: Optional[str] = None) -> None:
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return
+        job["progress"] = max(0, min(100, pct))
+        if step is not None:
+            job["step"] = step
+
+
+def _make_progress_callback(job_id: str) -> Callable[[int, str], None]:
+    def on_progress(pct: int, message: str) -> None:
+        job_progress(job_id, pct, message)
+        job_log(job_id, message)
+    return on_progress
+
+
 def start_container_backup_job(container_id: str, container_name: str) -> str:
     _cleanup_old_jobs()
     job_id = uuid.uuid4().hex
@@ -43,18 +79,31 @@ def start_container_backup_job(container_id: str, container_name: str) -> str:
             "filename": f"{container_name}_backup.zip",
             "path": None,
             "created": time.time(),
+            "progress": 0,
+            "step": "Starting backup",
+            "logs": [],
+            "log_seq": 0,
         }
 
     def worker() -> None:
         try:
-            docker_service.create_container_backup_file(container_id, zip_path)
+            job_log(job_id, f"Starting backup for {container_name}")
+            docker_service.create_container_backup_file(
+                container_id,
+                zip_path,
+                on_progress=_make_progress_callback(job_id),
+            )
             with _lock:
                 _jobs[job_id]["status"] = "done"
                 _jobs[job_id]["path"] = zip_path
+                _jobs[job_id]["progress"] = 100
+                _jobs[job_id]["step"] = "Complete"
+            job_log(job_id, "Backup ready for download", "done")
         except Exception as e:
             with _lock:
                 _jobs[job_id]["status"] = "error"
                 _jobs[job_id]["error"] = str(e)
+            job_log(job_id, str(e), "error")
             try:
                 if os.path.exists(zip_path):
                     os.unlink(zip_path)

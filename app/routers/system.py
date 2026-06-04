@@ -269,7 +269,7 @@ def backup_app_settings():
 
 @router.post("/settings/import")
 async def import_app_settings(file: UploadFile = File(...)):
-    """Import app settings from a ZIP archive created by settings backup."""
+    """Import app settings from a ZIP archive (NDJSON progress stream)."""
     if not (file.filename or "").lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Settings import file must be a .zip archive.")
 
@@ -277,37 +277,49 @@ async def import_app_settings(file: UploadFile = File(...)):
     if not raw:
         raise HTTPException(status_code=400, detail="Uploaded settings archive is empty.")
 
-    try:
-        imported_files = []
-        with zipfile.ZipFile(io.BytesIO(raw), "r") as z:
-            names = set(z.namelist())
-            if "manifest.json" not in names:
-                raise HTTPException(status_code=400, detail="Invalid settings archive: missing manifest.json")
+    def emit(status: str, progress: int, message: str, **extra) -> str:
+        return json.dumps({"status": status, "progress": progress, "message": message, **extra})
 
-            for logical_name, target_path in SETTINGS_FILES.items():
-                archive_path = f"settings/{logical_name}"
-                if archive_path not in names:
-                    continue
-                content = z.read(archive_path).decode("utf-8")
-                parsed = json.loads(content or "{}")
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                target_path.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
-                imported_files.append(logical_name)
+    def generate():
+        try:
+            yield emit("progress", 5, "Opening settings archive") + "\n"
+            imported_files = []
+            with zipfile.ZipFile(io.BytesIO(raw), "r") as z:
+                names = set(z.namelist())
+                if "manifest.json" not in names:
+                    yield emit("error", 0, "Invalid settings archive: missing manifest.json") + "\n"
+                    return
 
-        # Reload in-memory settings objects from disk.
-        settings._load_system_config()
+                file_list = list(SETTINGS_FILES.keys())
+                for idx, logical_name in enumerate(file_list):
+                    pct = 10 + int((idx + 1) / len(file_list) * 75)
+                    archive_path = f"settings/{logical_name}"
+                    target_path = SETTINGS_FILES[logical_name]
+                    if archive_path not in names:
+                        yield emit("progress", pct, f"Skipped {logical_name} (not in archive)") + "\n"
+                        continue
+                    yield emit("progress", pct, f"Restoring {logical_name}") + "\n"
+                    content = z.read(archive_path).decode("utf-8")
+                    parsed = json.loads(content or "{}")
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    target_path.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
+                    imported_files.append(logical_name)
 
-        return {
-            "status": "success",
-            "message": "Settings imported successfully.",
-            "imported_files": imported_files,
-            "restart_recommended": True,
-        }
-    except HTTPException:
-        raise
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="Invalid ZIP file.")
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON inside archive: {e}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to import settings: {e}")
+            yield emit("progress", 90, "Reloading in-memory configuration") + "\n"
+            settings._load_system_config()
+
+            yield emit(
+                "done",
+                100,
+                "Settings imported successfully.",
+                imported_files=imported_files,
+                restart_recommended=True,
+            ) + "\n"
+        except zipfile.BadZipFile:
+            yield emit("error", 0, "Invalid ZIP file.") + "\n"
+        except json.JSONDecodeError as e:
+            yield emit("error", 0, f"Invalid JSON inside archive: {e}") + "\n"
+        except Exception as e:
+            yield emit("error", 0, f"Failed to import settings: {e}") + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")

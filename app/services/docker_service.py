@@ -3,7 +3,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timezone
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Callable, Optional
 from docker.models.containers import Container
 from docker.errors import DockerException, NotFound, APIError
 import io
@@ -652,7 +652,11 @@ def _pack_backup_zip(source_dir: str, zip_path: str) -> None:
                 z.write(abs_path, rel_path, compress_type=compress)
 
 
-def _build_container_backup_workspace(container_id: str, tmpdir: str) -> tuple[str, list[str]]:
+def _build_container_backup_workspace(
+    container_id: str,
+    tmpdir: str,
+    on_progress: Optional[Callable[[int, str], None]] = None,
+) -> tuple[str, list[str]]:
     """
     Build backup artifacts in tmpdir:
     - container config/metadata
@@ -661,7 +665,12 @@ def _build_container_backup_workspace(container_id: str, tmpdir: str) -> tuple[s
 
     image.tar is omitted; import restores from filesystem.tar (faster, smaller backups).
     """
+    def progress(pct: int, message: str) -> None:
+        if on_progress:
+            on_progress(pct, message)
+
     client = _get_client()
+    progress(5, "Reading container metadata")
     c = client.containers.get(container_id)
     name = c.name.lstrip("/")
 
@@ -681,16 +690,25 @@ def _build_container_backup_workspace(container_id: str, tmpdir: str) -> tuple[s
     with open(os.path.join(meta_dir, "docker-compose.yaml"), "w", encoding="utf-8") as f:
         f.write(get_container_compose(container_id))
 
+    progress(10, f"Exporting filesystem for {name}")
     filesystem_tar_path = os.path.join(tmpdir, "filesystem.tar")
     _write_stream_to_file(c.export(), filesystem_tar_path)
+    progress(55, "Filesystem export complete")
 
-    for v in named_volumes:
+    vol_count = len(named_volumes)
+    for idx, v in enumerate(named_volumes):
         v_name = v["name"]
+        if vol_count:
+            pct = 55 + int((idx + 1) / vol_count * 30)
+        else:
+            pct = 85
+        progress(pct, f"Backing up volume {v_name}")
         v_tar_path = os.path.join(volumes_dir, f"{v_name}.tar")
         try:
             _backup_named_volume(client, v_name, v_tar_path)
         except Exception as e:
             warnings.append(f"Volume backup failed for '{v_name}': {e}")
+            progress(pct, f"Volume backup failed for '{v_name}': {e}")
 
     info_lines = [
         f"Backup for container: {name}",
@@ -716,11 +734,21 @@ def _build_container_backup_workspace(container_id: str, tmpdir: str) -> tuple[s
     return name, warnings
 
 
-def create_container_backup_file(container_id: str, zip_path: str) -> str:
+def create_container_backup_file(
+    container_id: str,
+    zip_path: str,
+    on_progress: Optional[Callable[[int, str], None]] = None,
+) -> str:
     """Write a full container backup ZIP to disk. Returns the container name."""
+    def progress(pct: int, message: str) -> None:
+        if on_progress:
+            on_progress(pct, message)
+
     with tempfile.TemporaryDirectory(prefix="cm-backup-") as tmpdir:
-        name, _ = _build_container_backup_workspace(container_id, tmpdir)
+        name, _ = _build_container_backup_workspace(container_id, tmpdir, on_progress=on_progress)
+        progress(90, "Packing backup ZIP")
         _pack_backup_zip(tmpdir, zip_path)
+        progress(100, "Backup complete")
     return name
 
 
@@ -742,11 +770,30 @@ def create_container_backup(container_id: str) -> io.BytesIO:
 
 
 def import_container_backup(backup_bytes: bytes, requested_name: Optional[str] = None) -> ActionResponse:
-    """
-    Restores a container from a backup ZIP produced by create_container_backup.
-    """
+    """Restores a container from a backup ZIP (sync wrapper)."""
+    result_message = ""
+    success = False
+    for line in import_container_backup_stream(backup_bytes, requested_name):
+        data = json.loads(line)
+        if data.get("status") == "done":
+            success = True
+            result_message = data.get("message", "Import complete.")
+        elif data.get("status") == "error":
+            return ActionResponse(success=False, message=data.get("message", "Import failed."))
+    if success:
+        return ActionResponse(success=True, message=result_message)
+    return ActionResponse(success=False, message="Import failed.")
+
+
+def import_container_backup_stream(backup_bytes: bytes, requested_name: Optional[str] = None):
+    """Yields NDJSON progress lines while restoring a container backup."""
     client = _get_client()
+
+    def emit(status: str, progress: int, message: str, **extra) -> str:
+        return json.dumps({"status": status, "progress": progress, "message": message, **extra})
+
     try:
+        yield emit("progress", 5, "Extracting backup archive")
         with tempfile.TemporaryDirectory(prefix="cm-import-") as tmpdir:
             backup_zip_path = os.path.join(tmpdir, "backup.zip")
             with open(backup_zip_path, "wb") as f:
@@ -755,9 +802,11 @@ def import_container_backup(backup_bytes: bytes, requested_name: Optional[str] =
             with zipfile.ZipFile(backup_zip_path, "r") as z:
                 z.extractall(tmpdir)
 
+            yield emit("progress", 10, "Reading manifest")
             manifest_path = os.path.join(tmpdir, "meta", "manifest.json")
             if not os.path.exists(manifest_path):
-                return ActionResponse(success=False, message="Invalid backup: missing meta/manifest.json")
+                yield emit("error", 0, "Invalid backup: missing meta/manifest.json")
+                return
 
             with open(manifest_path, "r", encoding="utf-8") as f:
                 manifest = json.load(f)
@@ -766,22 +815,23 @@ def import_container_backup(backup_bytes: bytes, requested_name: Optional[str] =
             container_name = requested_name or manifest.get("container_name") or f"imported-{datetime.now().strftime('%Y%m%d%H%M%S')}"
             was_running = bool(manifest.get("state", {}).get("was_running", True))
 
-            # Avoid name collisions.
             try:
                 client.containers.get(container_name)
                 container_name = f"{container_name}-imported-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                yield emit("progress", 12, f"Name in use; using {container_name}")
             except docker.errors.NotFound:
                 pass
 
             image_tar_path = os.path.join(tmpdir, "image.tar")
             if os.path.exists(image_tar_path):
+                yield emit("progress", 20, "Loading image from backup")
                 with open(image_tar_path, "rb") as f:
                     client.images.load(f.read())
 
-            # Prefer imported writable filesystem image to preserve mutable container state.
             filesystem_tar_path = os.path.join(tmpdir, "filesystem.tar")
             image_name = manifest.get("image_name")
             if os.path.exists(filesystem_tar_path):
+                yield emit("progress", 30, "Importing container filesystem")
                 with open(filesystem_tar_path, "rb") as f:
                     imported_ref = client.images.import_image_from_data(f.read())
                 imported_image = client.images.get(imported_ref)
@@ -789,12 +839,19 @@ def import_container_backup(backup_bytes: bytes, requested_name: Optional[str] =
                 tagged_tag = datetime.now().strftime("%Y%m%d%H%M%S")
                 imported_image.tag(repository=tagged_repo, tag=tagged_tag)
                 image_name = f"{tagged_repo}:{tagged_tag}"
+                yield emit("progress", 45, f"Tagged imported image as {image_name}")
 
             if not image_name:
-                return ActionResponse(success=False, message="Backup does not contain a valid image reference.")
+                yield emit("error", 0, "Backup does not contain a valid image reference.")
+                return
 
             mounts = cfg.get("mounts", [])
             bind_specs = []
+            volume_mounts = [
+                m for m in mounts
+                if m.get("type") == "volume" and m.get("name") and m.get("destination")
+            ]
+            volumes_restored = 0
             for m in mounts:
                 m_type = m.get("type")
                 dest = m.get("destination")
@@ -803,6 +860,12 @@ def import_container_backup(backup_bytes: bytes, requested_name: Optional[str] =
                     v_name = m["name"]
                     v_tar_path = os.path.join(tmpdir, "volumes", f"{v_name}.tar")
                     if os.path.exists(v_tar_path):
+                        volumes_restored += 1
+                        if volume_mounts:
+                            pct = 45 + int(volumes_restored / len(volume_mounts) * 35)
+                        else:
+                            pct = 80
+                        yield emit("progress", pct, f"Restoring volume {v_name}")
                         _restore_named_volume(client, v_name, v_tar_path)
                     mode = "rw" if rw else "ro"
                     bind_specs.append(f"{v_name}:{dest}:{mode}")
@@ -810,6 +873,7 @@ def import_container_backup(backup_bytes: bytes, requested_name: Optional[str] =
                     mode = "rw" if rw else "ro"
                     bind_specs.append(f"{m['source']}:{dest}:{mode}")
 
+            yield emit("progress", 85, "Resolving port bindings")
             raw_port_bindings = cfg.get("port_bindings") or {}
             requested_ports = {}
             for container_port, bindings in raw_port_bindings.items():
@@ -821,6 +885,7 @@ def import_container_backup(backup_bytes: bytes, requested_name: Optional[str] =
                 ]
             resolved_ports = resolve_port_conflicts(client, requested_ports) if requested_ports else {}
 
+            yield emit("progress", 90, f"Creating container {container_name}")
             new_container = client.containers.run(
                 image_name,
                 name=container_name,
@@ -838,11 +903,10 @@ def import_container_backup(backup_bytes: bytes, requested_name: Optional[str] =
             )
 
             if not was_running:
+                yield emit("progress", 95, "Stopping container (was stopped in backup)")
                 new_container.stop(timeout=5)
 
-            return ActionResponse(
-                success=True,
-                message=f"Backup imported as container '{container_name}' ({new_container.short_id}).",
-            )
+            message = f"Backup imported as container '{container_name}' ({new_container.short_id})."
+            yield emit("done", 100, message, container_id=new_container.id, container_name=container_name)
     except Exception as e:
-        return ActionResponse(success=False, message=f"Import failed: {e}")
+        yield emit("error", 0, f"Import failed: {e}")

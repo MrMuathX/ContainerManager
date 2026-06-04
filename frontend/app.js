@@ -861,8 +861,156 @@ function exportListToExcel() {
   toast('Dashboard exported to Excel', 'success');
 }
 
+/* ─── Operation progress modal ─────────────────────────────────────────────── */
+function openOperationModal(title, { indeterminate = false } = {}) {
+  const modal = document.getElementById('operationModal');
+  const titleEl = document.getElementById('operationTitle');
+  const log = document.getElementById('operationProgressLog');
+  const bar = document.getElementById('operationProgressBar');
+  const track = document.getElementById('operationProgressTrack');
+  const pct = document.getElementById('operationProgressPct');
+  const closeBtn = document.getElementById('btnCloseOperation');
+  titleEl.textContent = title;
+  log.innerHTML = '';
+  bar.style.width = '0%';
+  pct.textContent = indeterminate ? '…' : '0%';
+  track.classList.toggle('indeterminate', indeterminate);
+  closeBtn.style.display = 'none';
+  modal.style.display = 'flex';
+}
+
+function closeOperationModal() {
+  document.getElementById('operationModal').style.display = 'none';
+  document.getElementById('operationProgressTrack').classList.remove('indeterminate');
+}
+
+function appendOperationLog(message, status = 'progress') {
+  const log = document.getElementById('operationProgressLog');
+  const p = document.createElement('div');
+  p.className = `log-line ${status}`;
+  p.textContent = message;
+  log.appendChild(p);
+  log.scrollTop = log.scrollHeight;
+}
+
+function updateOperationBar(pct) {
+  const track = document.getElementById('operationProgressTrack');
+  const bar = document.getElementById('operationProgressBar');
+  const pctEl = document.getElementById('operationProgressPct');
+  track.classList.remove('indeterminate');
+  const clamped = Math.max(0, Math.min(100, pct));
+  bar.style.width = `${clamped}%`;
+  pctEl.textContent = `${clamped}%`;
+}
+
+function setOperationProgress(pct, message, status = 'progress') {
+  if (typeof pct === 'number') updateOperationBar(pct);
+  if (message) appendOperationLog(message, status);
+}
+
+function finishOperationModal(success, message) {
+  if (success && typeof message === 'string') {
+    updateOperationBar(100);
+    appendOperationLog(message, 'done');
+  } else if (!success && message) {
+    appendOperationLog(message, 'error');
+  }
+  document.getElementById('btnCloseOperation').style.display = 'block';
+}
+
+async function consumeNdjsonStream(response, handlers = {}) {
+  if (response.status === 401) {
+    window.location.href = '/login';
+    throw new Error('Unauthorized');
+  }
+  if (!response.ok && response.headers.get('content-type')?.includes('json')) {
+    let detail = response.statusText;
+    try {
+      const err = await response.json();
+      detail = err.detail || detail;
+    } catch (e) { /* ignore */ }
+    finishOperationModal(false, detail);
+    throw new Error(detail);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let lastDone = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let data;
+      try {
+        data = JSON.parse(line);
+      } catch (e) {
+        continue;
+      }
+      if (data.status === 'progress') {
+        setOperationProgress(data.progress ?? 0, data.message, 'progress');
+        handlers.onProgress?.(data);
+      } else if (data.status === 'done') {
+        finishOperationModal(true, data.message);
+        lastDone = data;
+        handlers.onDone?.(data);
+        return data;
+      } else if (data.status === 'error') {
+        finishOperationModal(false, data.message);
+        handlers.onError?.(data);
+        throw new Error(data.message || 'Operation failed');
+      }
+    }
+  }
+  if (lastDone) return lastDone;
+  throw new Error('Operation ended unexpectedly');
+}
+
+async function pollJobProgress(jobId, title) {
+  openOperationModal(title);
+  appendOperationLog('Job started…', 'progress');
+  let seenSeq = 0;
+
+  for (;;) {
+    await new Promise(r => setTimeout(r, 1500));
+    const stRes = await fetch(`/api/containers/jobs/${jobId}`, { credentials: 'include' });
+    if (stRes.status === 401) {
+      window.location.href = '/login';
+      throw new Error('Unauthorized');
+    }
+    if (!stRes.ok) throw new Error('Failed to check job status');
+    const data = await stRes.json();
+
+    for (const entry of data.logs || []) {
+      if (entry.seq > seenSeq) {
+        const level = entry.level === 'error' ? 'error' : entry.level === 'done' ? 'done' : 'progress';
+        appendOperationLog(entry.message, level);
+        seenSeq = entry.seq;
+      }
+    }
+    if (typeof data.progress === 'number') updateOperationBar(data.progress);
+
+    if (data.status === 'error') {
+      finishOperationModal(false, data.error || 'Backup failed');
+      throw new Error(data.error || 'Backup failed');
+    }
+    if (data.status === 'done') {
+      updateOperationBar(100);
+      return data;
+    }
+  }
+}
+
 /* ─── Backup Logic ─────────────────────────────────────────────────────────── */
-async function fetchContainerBackupBlob(id, onProgress) {
+async function fetchContainerBackupBlob(id) {
+  const c = containers.find(x => x.id === id);
+  const name = c ? c.name : id;
+
   const startRes = await fetch(`/api/containers/${id}/backup/prepare`, {
     method: 'POST',
     credentials: 'include',
@@ -880,28 +1028,21 @@ async function fetchContainerBackupBlob(id, onProgress) {
     throw new Error(detail);
   }
   const { job_id: jobId } = await startRes.json();
-  if (onProgress) onProgress('running');
+  const jobData = await pollJobProgress(jobId, `Backing up ${name}`);
 
-  for (;;) {
-    await new Promise(r => setTimeout(r, 2000));
-    const stRes = await fetch(`/api/containers/jobs/${jobId}`, { credentials: 'include' });
-    if (!stRes.ok) throw new Error('Failed to check backup status');
-    const data = await stRes.json();
-    if (data.status === 'error') throw new Error(data.error || 'Backup failed');
-    if (data.status === 'done') {
-      const dlRes = await fetch(`/api/containers/jobs/${jobId}/download`, { credentials: 'include' });
-      if (!dlRes.ok) {
-        let detail = dlRes.statusText;
-        try {
-          const err = await dlRes.json();
-          detail = err.detail || detail;
-        } catch (e) { /* ignore */ }
-        throw new Error(detail);
-      }
-      return { blob: await dlRes.blob(), filename: data.filename || 'container_backup.zip' };
-    }
-    if (onProgress) onProgress('running');
+  appendOperationLog('Downloading backup file…', 'progress');
+  const dlRes = await fetch(`/api/containers/jobs/${jobId}/download`, { credentials: 'include' });
+  if (!dlRes.ok) {
+    let detail = dlRes.statusText;
+    try {
+      const err = await dlRes.json();
+      detail = err.detail || detail;
+    } catch (e) { /* ignore */ }
+    finishOperationModal(false, detail);
+    throw new Error(detail);
   }
+  finishOperationModal(true, 'Download complete');
+  return { blob: await dlRes.blob(), filename: jobData.filename || `${name}_backup.zip` };
 }
 
 function triggerBlobDownload(blob, filename) {
@@ -917,42 +1058,42 @@ function triggerBlobDownload(blob, filename) {
 
 async function downloadBackup(id) {
   if (!id) return;
-  const c = containers.find(x => x.id === id);
-  const name = c ? c.name : id;
-  toast(`Building backup for ${name}…`, 'info', 300000);
   try {
     const { blob, filename } = await fetchContainerBackupBlob(id);
     triggerBlobDownload(blob, filename);
     toast('Backup downloaded', 'success');
   } catch (e) {
-    toast(`Backup failed: ${e.message}`, 'error');
+    if (e.message !== 'Unauthorized') toast(`Backup failed: ${e.message}`, 'error');
   }
 }
 
 async function downloadAllBackups() {
   if (selectedCheckboxIds.size > 0) {
-    toast(`Preparing backup for ${selectedCheckboxIds.size} container(s)…`, 'info', 600000);
     const zip = new JSZip();
     const ids = Array.from(selectedCheckboxIds);
     for (const id of ids) {
       try {
         const c = containers.find(x => x.id === id);
         const name = c ? c.name : id;
-        const { blob } = await fetchContainerBackupBlob(id, () => {
-          toast(`Still building backup for ${name}…`, 'info', 300000);
-        });
+        const { blob } = await fetchContainerBackupBlob(id);
         zip.file(`${name}_backup.zip`, blob);
       } catch (e) {
         toast(`Error backing up ${id}: ${e.message}`, 'error');
       }
     }
+    closeOperationModal();
     const blob = await zip.generateAsync({ type: 'blob' });
     triggerBlobDownload(blob, 'selected_containers_backup.zip');
     toast('Selected backup ready!', 'success');
   } else {
-    toast('Building master backup for all containers (this may take a while)…', 'info', 600000);
+    openOperationModal('Backing up all containers', { indeterminate: true });
+    appendOperationLog('Building master backup ZIP…', 'progress');
     try {
       const r = await fetch('/api/containers/all/backup', { credentials: 'include' });
+      if (r.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
       if (!r.ok) {
         let detail = r.statusText;
         try {
@@ -961,10 +1102,14 @@ async function downloadAllBackups() {
         } catch (e) { /* ignore */ }
         throw new Error(detail);
       }
+      updateOperationBar(100);
+      appendOperationLog('Downloading master backup…', 'progress');
       const blob = await r.blob();
+      finishOperationModal(true, 'Master backup ready');
       triggerBlobDownload(blob, 'all_containers_backup.zip');
       toast('Master backup downloaded', 'success');
     } catch (e) {
+      finishOperationModal(false, e.message);
       toast(`Master backup failed: ${e.message}`, 'error');
     }
   }
@@ -978,35 +1123,32 @@ async function uploadBackupFile(file) {
   }
   const formData = new FormData();
   formData.append('file', file);
-  toast(`Importing backup: ${file.name}...`, 'info');
+  openOperationModal(`Importing ${file.name}`);
+  appendOperationLog('Uploading backup file…', 'progress');
   try {
     const r = await fetch('/api/containers/import', {
       method: 'POST',
       body: formData,
       credentials: 'include',
     });
-    if (r.status === 401) {
-      window.location.href = '/login';
-      return;
-    }
-    let payload = {};
-    try { payload = await r.json(); } catch (e) { payload = {}; }
-    if (!r.ok) {
-      const msg = payload.detail || payload.message || `Import failed (${r.status})`;
-      throw new Error(msg);
-    }
-    toast(payload.message || 'Backup imported successfully', 'success');
+    await consumeNdjsonStream(r, {});
+    toast('Backup imported successfully', 'success');
     await loadContainers();
     await loadStats();
   } catch (e) {
-    toast(`Import failed: ${e.message}`, 'error');
+    if (e.message !== 'Unauthorized') toast(`Import failed: ${e.message}`, 'error');
   }
 }
 
 async function backupAppSettings() {
-  toast('Preparing app settings backup…', 'info', 60000);
+  openOperationModal('App settings backup', { indeterminate: true });
+  appendOperationLog('Preparing settings archive…', 'progress');
   try {
     const r = await fetch('/api/system/settings/backup', { credentials: 'include' });
+    if (r.status === 401) {
+      window.location.href = '/login';
+      return;
+    }
     if (!r.ok) {
       let detail = r.statusText;
       try {
@@ -1015,10 +1157,14 @@ async function backupAppSettings() {
       } catch (e) { /* ignore */ }
       throw new Error(detail);
     }
+    updateOperationBar(100);
+    appendOperationLog('Downloading settings backup…', 'progress');
     const blob = await r.blob();
+    finishOperationModal(true, 'Settings backup ready');
     triggerBlobDownload(blob, 'app_settings_backup.zip');
     toast('App settings backup downloaded', 'success');
   } catch (e) {
+    finishOperationModal(false, e.message);
     toast(`App settings backup failed: ${e.message}`, 'error');
   }
 }
@@ -1031,30 +1177,22 @@ async function importAppSettingsFile(file) {
   }
   const formData = new FormData();
   formData.append('file', file);
-  toast(`Importing app settings: ${file.name}...`, 'info');
+  openOperationModal(`Importing app settings`);
+  appendOperationLog(`Uploading ${file.name}…`, 'progress');
   try {
     const r = await fetch('/api/system/settings/import', {
       method: 'POST',
       body: formData,
       credentials: 'include',
     });
-    if (r.status === 401) {
-      window.location.href = '/login';
-      return;
-    }
-    let payload = {};
-    try { payload = await r.json(); } catch (e) { payload = {}; }
-    if (!r.ok) {
-      const msg = payload.detail || payload.message || `Import failed (${r.status})`;
-      throw new Error(msg);
-    }
-    toast(payload.message || 'App settings imported', 'success');
-    if (payload.restart_recommended) {
+    const data = await consumeNdjsonStream(r, {});
+    toast(data.message || 'App settings imported', 'success');
+    if (data.restart_recommended) {
       toast('Restart app/container to fully apply imported settings', 'info', 5000);
     }
     await loadStats();
   } catch (e) {
-    toast(`Settings import failed: ${e.message}`, 'error');
+    if (e.message !== 'Unauthorized') toast(`Settings import failed: ${e.message}`, 'error');
   }
 }
 
@@ -1586,6 +1724,10 @@ document.addEventListener('DOMContentLoaded', () => {
     new ResizeObserver(() => syncFloatingChatForToasts()).observe(toastContainer);
   }
   syncFloatingChatForToasts();
+
+  // Operation progress modal
+  const btnCloseOperation = document.getElementById('btnCloseOperation');
+  if (btnCloseOperation) btnCloseOperation.onclick = () => closeOperationModal();
 
   // Custom selects
   setupCustomSelect('providerSelect', (val) => { updateModelOptions(val); });

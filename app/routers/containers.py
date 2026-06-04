@@ -122,6 +122,10 @@ def container_backup_job_status(job_id: str):
         "status": job["status"],
         "error": job.get("error"),
         "filename": job.get("filename"),
+        "progress": job.get("progress", 0),
+        "step": job.get("step", ""),
+        "logs": job.get("logs", []),
+        "log_seq": job.get("log_seq", 0),
     }
 
 
@@ -254,27 +258,24 @@ async def backup_all_containers():
     )
 
 
-@router.post("/import", response_model=ActionResponse)
+@router.post("/import")
 async def import_backup(
     file: UploadFile = File(...),
     container_name: Optional[str] = Form(None),
 ):
-    """Import a full container backup ZIP and recreate container + data."""
-    try:
-        filename = (file.filename or "").lower()
-        if not filename.endswith(".zip"):
-            raise HTTPException(status_code=400, detail="Backup file must be a .zip archive.")
-        backup_bytes = await file.read()
-        if not backup_bytes:
-            raise HTTPException(status_code=400, detail="Uploaded backup file is empty.")
-        result = docker_service.import_container_backup(backup_bytes, requested_name=container_name)
-        if not result.success:
-            raise HTTPException(status_code=400, detail=result.message)
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Import a full container backup ZIP and recreate container + data (NDJSON progress stream)."""
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Backup file must be a .zip archive.")
+    backup_bytes = await file.read()
+    if not backup_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded backup file is empty.")
+
+    def generate():
+        for line in docker_service.import_container_backup_stream(backup_bytes, requested_name=container_name):
+            yield line + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 # ── WebSocket: Live Logs ─────────────────────────────────────────────────────

@@ -371,6 +371,23 @@
     </div>
   </div>
 
+  <!-- Shared operation progress modal (backup / import) -->
+  <div class="modal-overlay" id="operationModal" style="display:none">
+    <div class="modal operation-modal">
+      <h3 id="operationTitle">Working…</h3>
+      <div class="operation-progress-wrap">
+        <div class="progress-bar" id="operationProgressTrack">
+          <div class="progress-bar-fill" id="operationProgressBar"></div>
+        </div>
+        <span class="progress-pct" id="operationProgressPct">0%</span>
+      </div>
+      <div id="operationProgressLog" class="progress-log"></div>
+      <div class="modal-footer" style="margin-top:16px; display:flex; gap:12px; justify-content:flex-end;">
+        <button class="btn btn-primary" id="btnCloseOperation" style="display:none">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Confirm dialog -->
   <div class="modal-overlay" id="confirmModal" style="display:none">
     <div class="modal confirm-modal">
@@ -795,7 +812,7 @@
   <!-- Toast Container -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="app.js?v=10" defer></script>
+  <script src="app.js?v=11" defer></script>
 </body>
 
 </html>
