@@ -453,24 +453,50 @@ function toggleSelectAll(checked) {
     if (checked) selectedCheckboxIds.add(c.id);
     else selectedCheckboxIds.delete(c.id);
   });
+  updateSelectionActionLabels();
   renderList();
 }
 
 function toggleCheckbox(id, checked) {
   if (checked) selectedCheckboxIds.add(id);
   else selectedCheckboxIds.delete(id);
-  updateBackupBtnLabel();
+  updateSelectionActionLabels();
 }
 
-function updateBackupBtnLabel() {
-  const btn = document.getElementById('btnBackupAll');
-  if (!btn) return;
-  const svg = btn.querySelector('svg') ? btn.querySelector('svg').outerHTML : '';
-  if (selectedCheckboxIds.size > 0) {
-    btn.innerHTML = `${svg} Backup Selected (${selectedCheckboxIds.size})`;
-  } else {
-    btn.innerHTML = `${svg} Backup All`;
+function getBulkTargetIds() {
+  if (selectedCheckboxIds.size > 0) return Array.from(selectedCheckboxIds);
+  return containers.map(c => c.id);
+}
+
+function containerNameForId(id) {
+  const c = containers.find(x => x.id === id);
+  return c ? c.name : id;
+}
+
+function updateSelectionActionLabels() {
+  const btnBackup = document.getElementById('btnBackupAll');
+  if (btnBackup) {
+    const svg = btnBackup.querySelector('svg') ? btnBackup.querySelector('svg').outerHTML : '';
+    if (selectedCheckboxIds.size > 0) {
+      btnBackup.innerHTML = `${svg} Backup Selected (${selectedCheckboxIds.size})`;
+    } else {
+      btnBackup.innerHTML = `${svg} Backup All`;
+    }
   }
+
+  const n = selectedCheckboxIds.size;
+  const suffix = n > 0 ? ` Selected (${n})` : ' All';
+  const btnStart = document.getElementById('btnStartAll');
+  const btnStop = document.getElementById('btnStopAll');
+  const btnRestart = document.getElementById('btnRestartAll');
+  if (btnStart) btnStart.textContent = `▶ Start${suffix}`;
+  if (btnStop) btnStop.textContent = `⏹ Stop${suffix}`;
+  if (btnRestart) btnRestart.textContent = `↺ Restart${suffix}`;
+}
+
+/** @deprecated use updateSelectionActionLabels */
+function updateBackupBtnLabel() {
+  updateSelectionActionLabels();
 }
 
 /* ─── Select container ─────────────────────────────────────────────────────── */
@@ -746,7 +772,64 @@ async function loadPorts() {
 }
 
 /* ─── Container actions ────────────────────────────────────────────────────── */
+async function runSequentialContainerAction(action, ids) {
+  if (!ids.length) {
+    toast('No containers to act on', 'error');
+    return { ok: 0, fail: 0 };
+  }
+
+  const verb = action.charAt(0).toUpperCase() + action.slice(1);
+  let ok = 0;
+  let fail = 0;
+
+  for (const id of ids) {
+    const name = containerNameForId(id);
+    try {
+      const r = await api(`/api/containers/${id}/${action}`, 'POST');
+      const data = await r.json();
+      if (data.success) {
+        ok++;
+      } else {
+        fail++;
+        toast(`${name}: ${data.message}`, 'error');
+      }
+    } catch (e) {
+      fail++;
+      toast(`${name}: ${e.message}`, 'error');
+    }
+  }
+
+  await loadContainers();
+  if (selectedId && ids.includes(selectedId)) {
+    try { await loadDetail(selectedId); } catch (e) { /* ignore */ }
+  }
+
+  if (fail === 0) {
+    toast(`${verb}ed ${ok} container(s)`, 'success');
+  } else if (ok === 0) {
+    toast(`${verb} failed for all ${fail} container(s)`, 'error');
+  } else {
+    toast(`${verb}: ${ok} succeeded, ${fail} failed`, 'info');
+  }
+
+  return { ok, fail };
+}
+
+async function bulkContainerAction(action) {
+  const ids = getBulkTargetIds();
+  const scope = selectedCheckboxIds.size > 0 ? 'selected' : 'all';
+  const title = `${action.charAt(0).toUpperCase() + action.slice(1)} ${scope}`;
+  const msg = `${action.charAt(0).toUpperCase() + action.slice(1)} ${ids.length} container(s) one at a time?`;
+  if (!await confirm(title, msg)) return;
+  toast(`${action.charAt(0).toUpperCase() + action.slice(1)}ing ${ids.length} container(s)...`, 'info', ids.length * 4000);
+  await runSequentialContainerAction(action, ids);
+}
+
 async function containerAction(action, method = 'POST', body) {
+  if (action !== 'rename' && selectedCheckboxIds.size > 1) {
+    await bulkContainerAction(action);
+    return;
+  }
   if (!selectedId) return;
   try {
     const r = await api(`/api/containers/${selectedId}/${action}`, method, body);
@@ -1847,20 +1930,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Dashboard buttons
   document.getElementById('btnRefreshDashboard').onclick = () => loadContainers();
-  document.getElementById('btnStartAll').onclick = async () => {
-    if (await confirm('Start All', 'Are you sure you want to start all containers?')) {
-      toast('Starting all containers...', 'info');
-      await api('/api/containers/bulk/start', 'POST', { ids: containers.map(c => c.id) });
-      loadContainers();
-    }
-  };
-  document.getElementById('btnStopAll').onclick = async () => {
-    if (await confirm('Stop All', 'Are you sure you want to stop all active containers?')) {
-      toast('Stopping containers...', 'info');
-      await api('/api/containers/bulk/stop', 'POST', { ids: containers.map(c => c.id) });
-      loadContainers();
-    }
-  };
+  document.getElementById('btnStartAll').onclick = () => bulkContainerAction('start');
+  document.getElementById('btnStopAll').onclick = () => bulkContainerAction('stop');
+  document.getElementById('btnRestartAll').onclick = () => bulkContainerAction('restart');
 
   // --- Notification Settings ---
   document.getElementById('btnNotifications').onclick = async () => {
