@@ -958,12 +958,21 @@ function syncOperationMiniBar() {
   if (!mini || mini.style.display === 'none') return;
   const pct = document.getElementById('operationProgressPct');
   const miniPct = document.getElementById('operationMiniPct');
+  const miniFill = document.getElementById('operationMiniBarFill');
   if (pct && miniPct) miniPct.textContent = pct.textContent;
+  if (pct && miniFill) {
+    const text = pct.textContent.replace('%', '').trim();
+    const num = text === '…' ? 0 : parseInt(text, 10);
+    miniFill.style.width = Number.isFinite(num) ? `${num}%` : '30%';
+  }
 }
 
 function hideOperationMini() {
   const mini = document.getElementById('operationMini');
-  if (mini) mini.style.display = 'none';
+  if (mini) {
+    mini.style.display = 'none';
+    mini.classList.remove('running');
+  }
 }
 
 function openOperationModal(title, { indeterminate = false } = {}) {
@@ -1001,19 +1010,21 @@ function closeOperationModal() {
 }
 
 function minimizeOperationModal() {
-  if (!operationRunning) return;
+  if (!operationRunning && document.getElementById('btnCloseOperation').style.display === 'none') return;
   document.getElementById('operationModal').style.display = 'none';
   const title = document.getElementById('operationTitle').textContent;
   document.getElementById('operationMiniTitle').textContent = title;
   syncOperationMiniBar();
-  document.getElementById('operationMini').style.display = 'flex';
+  const mini = document.getElementById('operationMini');
+  mini.style.display = 'flex';
+  if (operationRunning) mini.classList.add('running');
+  else mini.classList.remove('running');
 }
 
 function restoreOperationModal() {
-  document.getElementById('operationMini').style.display = 'none';
-  if (operationRunning || document.getElementById('btnCloseOperation').style.display !== 'none') {
-    document.getElementById('operationModal').style.display = 'flex';
-  }
+  document.getElementById('operationMini').classList.remove('running');
+  hideOperationMini();
+  document.getElementById('operationModal').style.display = 'flex';
 }
 
 function cancelOperation() {
@@ -1058,8 +1069,10 @@ function finishOperationModal(success, message) {
   operationRunning = false;
   const cancelBtn = document.getElementById('btnCancelOperation');
   const cancelMini = document.getElementById('btnCancelOperationMini');
+  const mini = document.getElementById('operationMini');
   if (cancelBtn) cancelBtn.style.display = 'none';
   if (cancelMini) cancelMini.style.display = 'none';
+  if (mini) mini.classList.remove('running');
   if (success && typeof message === 'string') {
     updateOperationBar(100);
     appendOperationLog(message, 'done');
@@ -1929,11 +1942,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnCancelOperation = document.getElementById('btnCancelOperation');
   if (btnCancelOperation) btnCancelOperation.onclick = () => cancelOperation();
   const btnCancelOperationMini = document.getElementById('btnCancelOperationMini');
-  if (btnCancelOperationMini) btnCancelOperationMini.onclick = () => cancelOperation();
+  if (btnCancelOperationMini) {
+    btnCancelOperationMini.onclick = (e) => {
+      e.stopPropagation();
+      cancelOperation();
+    };
+  }
   const btnMinimizeOperation = document.getElementById('btnMinimizeOperation');
   if (btnMinimizeOperation) btnMinimizeOperation.onclick = () => minimizeOperationModal();
-  const btnRestoreOperation = document.getElementById('btnRestoreOperation');
-  if (btnRestoreOperation) btnRestoreOperation.onclick = () => restoreOperationModal();
+  const operationMiniBody = document.getElementById('operationMiniBody');
+  if (operationMiniBody) operationMiniBody.onclick = () => restoreOperationModal();
 
   // Custom selects
   setupCustomSelect('providerSelect', (val) => { updateModelOptions(val); });

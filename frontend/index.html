@@ -393,16 +393,16 @@
     </div>
   </div>
 
-  <!-- Minimized operation progress -->
-  <div id="operationMini" class="operation-mini" style="display:none">
-    <div class="operation-mini-info">
+  <!-- Minimized operation progress (bottom-left corner; click to expand) -->
+  <div id="operationMini" class="operation-mini" style="display:none" title="Click to expand progress">
+    <button type="button" class="operation-mini-body" id="operationMiniBody" title="Expand">
       <span id="operationMiniTitle">Working…</span>
+      <div class="operation-mini-bar-track">
+        <div class="operation-mini-bar-fill" id="operationMiniBarFill"></div>
+      </div>
       <span id="operationMiniPct" class="progress-pct">0%</span>
-    </div>
-    <div class="operation-mini-actions">
-      <button type="button" class="btn btn-ghost btn-sm" id="btnRestoreOperation" title="Expand">▢</button>
-      <button type="button" class="btn btn-ghost btn-sm" id="btnCancelOperationMini" title="Cancel">✕</button>
-    </div>
+    </button>
+    <button type="button" class="btn btn-ghost btn-sm operation-mini-cancel" id="btnCancelOperationMini" title="Cancel">✕</button>
   </div>
 
   <!-- Confirm dialog -->
@@ -829,7 +829,7 @@
   <!-- Toast Container -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="app.js?v=13" defer></script>
+  <script src="app.js?v=14" defer></script>
 </body>
 
 </html>

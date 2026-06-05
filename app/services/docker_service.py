@@ -531,6 +531,32 @@ def _sanitize_image_name_for_tag(image_name: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in safe).strip("._-") or "container"
 
 
+def _ensure_import_network(client: docker.DockerClient, network_mode: Optional[str]) -> tuple[str, list[str]]:
+    """
+    Ensure the target network exists before container create/start.
+    Compose projects use network_mode like 'projectname_default'; recreate if missing.
+    """
+    warnings: list[str] = []
+    mode = (network_mode or "bridge").strip() or "bridge"
+    builtin = {"bridge", "host", "none", "default"}
+    if mode in builtin:
+        return mode, warnings
+    if mode.startswith("container:") or mode.startswith("service:"):
+        warnings.append(f"Network mode '{mode}' is not portable; using bridge")
+        return "bridge", warnings
+
+    try:
+        client.networks.get(mode)
+    except NotFound:
+        try:
+            client.networks.create(name=mode, driver="bridge", check_duplicate=True)
+            warnings.append(f"Created missing network '{mode}'")
+        except Exception as e:
+            warnings.append(f"Network '{mode}' not found and could not be created ({e}); using bridge")
+            return "bridge", warnings
+    return mode, warnings
+
+
 def _import_filesystem_tar_as_image(
     client: docker.DockerClient,
     tar_path: str,
@@ -896,6 +922,11 @@ def import_container_backup_stream(backup_bytes: bytes, requested_name: Optional
                 ]
             resolved_ports = resolve_port_conflicts(client, requested_ports) if requested_ports else {}
 
+            yield emit("progress", 87, "Preparing container network")
+            network_mode, net_warnings = _ensure_import_network(client, cfg.get("network_mode"))
+            for warning in net_warnings:
+                yield emit("progress", 88, warning)
+
             yield emit("progress", 90, f"Creating container {container_name}")
             new_container = client.containers.run(
                 image_name,
@@ -908,7 +939,7 @@ def import_container_backup_stream(backup_bytes: bytes, requested_name: Optional
                 working_dir=cfg.get("working_dir") or None,
                 user=cfg.get("user") or None,
                 restart_policy=cfg.get("restart_policy") or {"Name": "no"},
-                network_mode=cfg.get("network_mode") or "bridge",
+                network_mode=network_mode,
                 ports=resolved_ports,
                 volumes=bind_specs or None,
             )
