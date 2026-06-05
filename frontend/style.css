@@ -1315,6 +1315,72 @@ body {
   max-width: 560px;
 }
 
+.operation-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.operation-modal-header h3 {
+  margin: 0;
+  flex: 1;
+}
+
+.btn-icon {
+  min-width: 36px;
+  padding: 6px 10px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.operation-modal-footer {
+  margin-top: 16px;
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.operation-mini {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 10050;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--surface-2, #1e293b);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 10px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  min-width: 280px;
+  max-width: 420px;
+}
+
+.operation-mini-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.operation-mini-info #operationMiniTitle {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.operation-mini-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .operation-progress-wrap {
   display: flex;
   align-items: center;

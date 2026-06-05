@@ -375,7 +375,10 @@
   <!-- Shared operation progress modal (backup / import) -->
   <div class="modal-overlay" id="operationModal" style="display:none">
     <div class="modal operation-modal">
-      <h3 id="operationTitle">Working…</h3>
+      <div class="operation-modal-header">
+        <h3 id="operationTitle">Working…</h3>
+        <button type="button" class="btn btn-ghost btn-icon" id="btnMinimizeOperation" title="Minimize">−</button>
+      </div>
       <div class="operation-progress-wrap">
         <div class="progress-bar" id="operationProgressTrack">
           <div class="progress-bar-fill" id="operationProgressBar"></div>
@@ -383,9 +386,22 @@
         <span class="progress-pct" id="operationProgressPct">0%</span>
       </div>
       <div id="operationProgressLog" class="progress-log"></div>
-      <div class="modal-footer" style="margin-top:16px; display:flex; gap:12px; justify-content:flex-end;">
-        <button class="btn btn-primary" id="btnCloseOperation" style="display:none">Close</button>
+      <div class="modal-footer operation-modal-footer">
+        <button type="button" class="btn btn-ghost" id="btnCancelOperation">Cancel</button>
+        <button type="button" class="btn btn-primary" id="btnCloseOperation" style="display:none">Close</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Minimized operation progress -->
+  <div id="operationMini" class="operation-mini" style="display:none">
+    <div class="operation-mini-info">
+      <span id="operationMiniTitle">Working…</span>
+      <span id="operationMiniPct" class="progress-pct">0%</span>
+    </div>
+    <div class="operation-mini-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="btnRestoreOperation" title="Expand">▢</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="btnCancelOperationMini" title="Cancel">✕</button>
     </div>
   </div>
 
@@ -813,7 +829,7 @@
   <!-- Toast Container -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="app.js?v=12" defer></script>
+  <script src="app.js?v=13" defer></script>
 </body>
 
 </html>

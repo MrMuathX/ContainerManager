@@ -531,6 +531,23 @@ def _sanitize_image_name_for_tag(image_name: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in safe).strip("._-") or "container"
 
 
+def _import_filesystem_tar_as_image(
+    client: docker.DockerClient,
+    tar_path: str,
+    container_name: str,
+) -> str:
+    """Import a docker export tar via the low-level API (client.api, not client.images)."""
+    tagged_repo = f"cm-import/{_sanitize_image_name_for_tag(container_name)}"
+    tagged_tag = datetime.now().strftime("%Y%m%d%H%M%S")
+    with open(tar_path, "rb") as f:
+        client.api.import_image_from_data(
+            f.read(),
+            repository=tagged_repo,
+            tag=tagged_tag,
+        )
+    return f"{tagged_repo}:{tagged_tag}"
+
+
 def _container_backup_manifest(c: Container) -> dict:
     attrs = c.attrs
     config = attrs.get("Config", {})
@@ -832,13 +849,7 @@ def import_container_backup_stream(backup_bytes: bytes, requested_name: Optional
             image_name = manifest.get("image_name")
             if os.path.exists(filesystem_tar_path):
                 yield emit("progress", 30, "Importing container filesystem")
-                with open(filesystem_tar_path, "rb") as f:
-                    imported_ref = client.images.import_image_from_data(f.read())
-                imported_image = client.images.get(imported_ref)
-                tagged_repo = f"cm-import/{_sanitize_image_name_for_tag(container_name)}"
-                tagged_tag = datetime.now().strftime("%Y%m%d%H%M%S")
-                imported_image.tag(repository=tagged_repo, tag=tagged_tag)
-                image_name = f"{tagged_repo}:{tagged_tag}"
+                image_name = _import_filesystem_tar_as_image(client, filesystem_tar_path, container_name)
                 yield emit("progress", 45, f"Tagged imported image as {image_name}")
 
             if not image_name:

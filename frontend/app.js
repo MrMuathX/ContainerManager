@@ -945,7 +945,32 @@ function exportListToExcel() {
 }
 
 /* ─── Operation progress modal ─────────────────────────────────────────────── */
+let operationAbortController = null;
+let operationCancelled = false;
+let operationRunning = false;
+
+function getOperationSignal() {
+  return operationAbortController?.signal;
+}
+
+function syncOperationMiniBar() {
+  const mini = document.getElementById('operationMini');
+  if (!mini || mini.style.display === 'none') return;
+  const pct = document.getElementById('operationProgressPct');
+  const miniPct = document.getElementById('operationMiniPct');
+  if (pct && miniPct) miniPct.textContent = pct.textContent;
+}
+
+function hideOperationMini() {
+  const mini = document.getElementById('operationMini');
+  if (mini) mini.style.display = 'none';
+}
+
 function openOperationModal(title, { indeterminate = false } = {}) {
+  operationAbortController = new AbortController();
+  operationCancelled = false;
+  operationRunning = true;
+
   const modal = document.getElementById('operationModal');
   const titleEl = document.getElementById('operationTitle');
   const log = document.getElementById('operationProgressLog');
@@ -953,18 +978,55 @@ function openOperationModal(title, { indeterminate = false } = {}) {
   const track = document.getElementById('operationProgressTrack');
   const pct = document.getElementById('operationProgressPct');
   const closeBtn = document.getElementById('btnCloseOperation');
+  const cancelBtn = document.getElementById('btnCancelOperation');
   titleEl.textContent = title;
   log.innerHTML = '';
   bar.style.width = '0%';
   pct.textContent = indeterminate ? '…' : '0%';
   track.classList.toggle('indeterminate', indeterminate);
   closeBtn.style.display = 'none';
+  cancelBtn.style.display = 'inline-flex';
+  const cancelMini = document.getElementById('btnCancelOperationMini');
+  if (cancelMini) cancelMini.style.display = 'inline-flex';
+  hideOperationMini();
   modal.style.display = 'flex';
 }
 
 function closeOperationModal() {
   document.getElementById('operationModal').style.display = 'none';
   document.getElementById('operationProgressTrack').classList.remove('indeterminate');
+  hideOperationMini();
+  operationRunning = false;
+  operationAbortController = null;
+}
+
+function minimizeOperationModal() {
+  if (!operationRunning) return;
+  document.getElementById('operationModal').style.display = 'none';
+  const title = document.getElementById('operationTitle').textContent;
+  document.getElementById('operationMiniTitle').textContent = title;
+  syncOperationMiniBar();
+  document.getElementById('operationMini').style.display = 'flex';
+}
+
+function restoreOperationModal() {
+  document.getElementById('operationMini').style.display = 'none';
+  if (operationRunning || document.getElementById('btnCloseOperation').style.display !== 'none') {
+    document.getElementById('operationModal').style.display = 'flex';
+  }
+}
+
+function cancelOperation() {
+  if (!operationRunning) return;
+  operationCancelled = true;
+  operationRunning = false;
+  if (operationAbortController) operationAbortController.abort();
+  finishOperationModal(false, 'Operation cancelled');
+  toast('Operation cancelled', 'info');
+}
+
+function isOperationCancelled() {
+  return operationCancelled;
 }
 
 function appendOperationLog(message, status = 'progress') {
@@ -984,6 +1046,7 @@ function updateOperationBar(pct) {
   const clamped = Math.max(0, Math.min(100, pct));
   bar.style.width = `${clamped}%`;
   pctEl.textContent = `${clamped}%`;
+  syncOperationMiniBar();
 }
 
 function setOperationProgress(pct, message, status = 'progress') {
@@ -992,13 +1055,38 @@ function setOperationProgress(pct, message, status = 'progress') {
 }
 
 function finishOperationModal(success, message) {
+  operationRunning = false;
+  const cancelBtn = document.getElementById('btnCancelOperation');
+  const cancelMini = document.getElementById('btnCancelOperationMini');
+  if (cancelBtn) cancelBtn.style.display = 'none';
+  if (cancelMini) cancelMini.style.display = 'none';
   if (success && typeof message === 'string') {
     updateOperationBar(100);
     appendOperationLog(message, 'done');
   } else if (!success && message) {
     appendOperationLog(message, 'error');
   }
-  document.getElementById('btnCloseOperation').style.display = 'block';
+  document.getElementById('btnCloseOperation').style.display = 'inline-flex';
+  syncOperationMiniBar();
+}
+
+async function operationDelay(ms) {
+  if (operationCancelled) throw new Error('Cancelled');
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    const signal = getOperationSignal();
+    if (signal) {
+      if (signal.aborted) {
+        clearTimeout(timer);
+        reject(new Error('Cancelled'));
+        return;
+      }
+      signal.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(new Error('Cancelled'));
+      }, { once: true });
+    }
+  });
 }
 
 async function consumeNdjsonStream(response, handlers = {}) {
@@ -1022,6 +1110,7 @@ async function consumeNdjsonStream(response, handlers = {}) {
   let lastDone = null;
 
   while (true) {
+    if (operationCancelled) throw new Error('Cancelled');
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -1054,14 +1143,19 @@ async function consumeNdjsonStream(response, handlers = {}) {
   throw new Error('Operation ended unexpectedly');
 }
 
-async function pollJobProgress(jobId, title) {
-  openOperationModal(title);
-  appendOperationLog('Job started…', 'progress');
+async function pollJobProgress(jobId) {
+  appendOperationLog('Waiting for backup job…', 'progress');
   let seenSeq = 0;
 
   for (;;) {
-    await new Promise(r => setTimeout(r, 1500));
-    const stRes = await fetch(`/api/containers/jobs/${jobId}`, { credentials: 'include' });
+    if (operationCancelled) throw new Error('Cancelled');
+    await operationDelay(1500);
+    if (operationCancelled) throw new Error('Cancelled');
+
+    const stRes = await fetch(`/api/containers/jobs/${jobId}`, {
+      credentials: 'include',
+      signal: getOperationSignal(),
+    });
     if (stRes.status === 401) {
       window.location.href = '/login';
       throw new Error('Unauthorized');
@@ -1094,9 +1188,13 @@ async function fetchContainerBackupBlob(id) {
   const c = containers.find(x => x.id === id);
   const name = c ? c.name : id;
 
+  openOperationModal(`Backing up ${name}`);
+  appendOperationLog('Starting backup job…', 'progress');
+
   const startRes = await fetch(`/api/containers/${id}/backup/prepare`, {
     method: 'POST',
     credentials: 'include',
+    signal: getOperationSignal(),
   });
   if (startRes.status === 401) {
     window.location.href = '/login';
@@ -1111,10 +1209,13 @@ async function fetchContainerBackupBlob(id) {
     throw new Error(detail);
   }
   const { job_id: jobId } = await startRes.json();
-  const jobData = await pollJobProgress(jobId, `Backing up ${name}`);
+  const jobData = await pollJobProgress(jobId);
 
   appendOperationLog('Downloading backup file…', 'progress');
-  const dlRes = await fetch(`/api/containers/jobs/${jobId}/download`, { credentials: 'include' });
+  const dlRes = await fetch(`/api/containers/jobs/${jobId}/download`, {
+    credentials: 'include',
+    signal: getOperationSignal(),
+  });
   if (!dlRes.ok) {
     let detail = dlRes.statusText;
     try {
@@ -1146,7 +1247,9 @@ async function downloadBackup(id) {
     triggerBlobDownload(blob, filename);
     toast('Backup downloaded', 'success');
   } catch (e) {
-    if (e.message !== 'Unauthorized') toast(`Backup failed: ${e.message}`, 'error');
+    if (e.message !== 'Unauthorized' && e.message !== 'Cancelled') {
+      toast(`Backup failed: ${e.message}`, 'error');
+    }
   }
 }
 
@@ -1172,7 +1275,10 @@ async function downloadAllBackups() {
     openOperationModal('Backing up all containers', { indeterminate: true });
     appendOperationLog('Building master backup ZIP…', 'progress');
     try {
-      const r = await fetch('/api/containers/all/backup', { credentials: 'include' });
+      const r = await fetch('/api/containers/all/backup', {
+        credentials: 'include',
+        signal: getOperationSignal(),
+      });
       if (r.status === 401) {
         window.location.href = '/login';
         return;
@@ -1213,13 +1319,16 @@ async function uploadBackupFile(file) {
       method: 'POST',
       body: formData,
       credentials: 'include',
+      signal: getOperationSignal(),
     });
     await consumeNdjsonStream(r, {});
     toast('Backup imported successfully', 'success');
     await loadContainers();
     await loadStats();
   } catch (e) {
-    if (e.message !== 'Unauthorized') toast(`Import failed: ${e.message}`, 'error');
+    if (e.message !== 'Unauthorized' && e.message !== 'Cancelled') {
+      toast(`Import failed: ${e.message}`, 'error');
+    }
   }
 }
 
@@ -1227,7 +1336,10 @@ async function backupAppSettings() {
   openOperationModal('App settings backup', { indeterminate: true });
   appendOperationLog('Preparing settings archive…', 'progress');
   try {
-    const r = await fetch('/api/system/settings/backup', { credentials: 'include' });
+    const r = await fetch('/api/system/settings/backup', {
+      credentials: 'include',
+      signal: getOperationSignal(),
+    });
     if (r.status === 401) {
       window.location.href = '/login';
       return;
@@ -1267,6 +1379,7 @@ async function importAppSettingsFile(file) {
       method: 'POST',
       body: formData,
       credentials: 'include',
+      signal: getOperationSignal(),
     });
     const data = await consumeNdjsonStream(r, {});
     toast(data.message || 'App settings imported', 'success');
@@ -1275,7 +1388,9 @@ async function importAppSettingsFile(file) {
     }
     await loadStats();
   } catch (e) {
-    if (e.message !== 'Unauthorized') toast(`Settings import failed: ${e.message}`, 'error');
+    if (e.message !== 'Unauthorized' && e.message !== 'Cancelled') {
+      toast(`Settings import failed: ${e.message}`, 'error');
+    }
   }
 }
 
@@ -1811,6 +1926,14 @@ document.addEventListener('DOMContentLoaded', () => {
   // Operation progress modal
   const btnCloseOperation = document.getElementById('btnCloseOperation');
   if (btnCloseOperation) btnCloseOperation.onclick = () => closeOperationModal();
+  const btnCancelOperation = document.getElementById('btnCancelOperation');
+  if (btnCancelOperation) btnCancelOperation.onclick = () => cancelOperation();
+  const btnCancelOperationMini = document.getElementById('btnCancelOperationMini');
+  if (btnCancelOperationMini) btnCancelOperationMini.onclick = () => cancelOperation();
+  const btnMinimizeOperation = document.getElementById('btnMinimizeOperation');
+  if (btnMinimizeOperation) btnMinimizeOperation.onclick = () => minimizeOperationModal();
+  const btnRestoreOperation = document.getElementById('btnRestoreOperation');
+  if (btnRestoreOperation) btnRestoreOperation.onclick = () => restoreOperationModal();
 
   // Custom selects
   setupCustomSelect('providerSelect', (val) => { updateModelOptions(val); });
