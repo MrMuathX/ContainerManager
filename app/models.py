@@ -107,3 +107,20 @@ class ContainerMonitoringConfig(BaseModel):
     auto_start_on_stop: bool = False
     monitor_logs: bool = False
     log_patterns: List[str] = ["error", "panic", "fatal", "exception"]
+    # Watchtower-style auto image updates (per container opt-in)
+    auto_update: bool = False
+    # Only check & notify for this container, never apply (overrides apply)
+    auto_update_monitor_only: bool = False
+
+
+class AutoUpdateSettings(BaseModel):
+    """Global Watchtower-style auto-update configuration."""
+    enabled: bool = False                # master switch for the background updater
+    interval_seconds: int = 86400        # poll interval (default 24h, like Watchtower)
+    scope: str = "opt-in"                # "opt-in" (only flagged containers) or "all"
+    monitor_only: bool = False           # globally check & notify, never apply
+    cleanup: bool = True                 # remove old images after a successful update
+    notify: bool = True                  # send notifications on update events
+    respect_labels: bool = True          # honor com.centurylinklabs.watchtower.* labels
+    last_run: Optional[str] = None       # ISO timestamp of last completed run
+    last_summary: Optional[str] = None   # short human-readable summary of last run

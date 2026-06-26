@@ -534,6 +534,9 @@ async function loadMonitoringConfig(id) {
     document.getElementById('monAutoStartOnStop').checked = conf.auto_start_on_stop || false;
     document.getElementById('monLogs').checked = conf.monitor_logs;
     document.getElementById('monPatterns').value = conf.log_patterns.join(',');
+    document.getElementById('monAutoUpdate').checked = conf.auto_update || false;
+    document.getElementById('monAutoUpdateMonitorOnly').checked = conf.auto_update_monitor_only || false;
+    document.getElementById('updateCheckResult').textContent = '';
   } catch (e) { console.error("Monitor load err", e); }
 }
 
@@ -1785,6 +1788,92 @@ document.getElementById('btnTestMQTTConfig').onclick = async () => {
   finally { btn.textContent = originalText; btn.disabled = false; }
 };
 
+/* ─── Auto-Update (Watchtower-style) Settings ─────────────────────────────── */
+
+function renderAutoUpdateLastRun(cfg) {
+  const el = document.getElementById('auLastRun');
+  if (!el) return;
+  if (cfg.last_run) {
+    const when = new Date(cfg.last_run).toLocaleString();
+    el.textContent = `Last run: ${when}` + (cfg.last_summary ? ` — ${cfg.last_summary}` : '');
+  } else {
+    el.textContent = 'Has not run yet.';
+  }
+}
+
+document.getElementById('btnAutoUpdate').onclick = async () => {
+  try {
+    const r = await api('/api/system/autoupdate');
+    if (!r.ok) return toast('Could not fetch auto-update settings.', 'error');
+    const cfg = await r.json();
+    document.getElementById('auEnabled').checked = cfg.enabled;
+    document.getElementById('auInterval').value = String(cfg.interval_seconds || 86400);
+    document.getElementById('auScope').value = cfg.scope || 'opt-in';
+    document.getElementById('auMonitorOnly').checked = cfg.monitor_only;
+    document.getElementById('auCleanup').checked = cfg.cleanup;
+    document.getElementById('auNotify').checked = cfg.notify;
+    document.getElementById('auRespectLabels').checked = cfg.respect_labels;
+    renderAutoUpdateLastRun(cfg);
+    document.getElementById('autoUpdateModal').style.display = 'flex';
+  } catch (e) { toast('Error loading auto-update settings: ' + e.message, 'error'); }
+};
+
+document.getElementById('btnCancelAutoUpdate').onclick = () => {
+  document.getElementById('autoUpdateModal').style.display = 'none';
+};
+
+function collectAutoUpdatePayload() {
+  return {
+    enabled: document.getElementById('auEnabled').checked,
+    interval_seconds: parseInt(document.getElementById('auInterval').value, 10) || 86400,
+    scope: document.getElementById('auScope').value,
+    monitor_only: document.getElementById('auMonitorOnly').checked,
+    cleanup: document.getElementById('auCleanup').checked,
+    notify: document.getElementById('auNotify').checked,
+    respect_labels: document.getElementById('auRespectLabels').checked
+  };
+}
+
+document.getElementById('btnSaveAutoUpdate').onclick = async () => {
+  try {
+    const r = await api('/api/system/autoupdate', 'POST', collectAutoUpdatePayload());
+    if (r.ok) {
+      document.getElementById('autoUpdateModal').style.display = 'none';
+      toast('Auto-update settings saved.', 'success');
+    } else {
+      const err = await r.json();
+      toast('Failed to save: ' + (err.detail || ''), 'error');
+    }
+  } catch (e) { toast('Error saving auto-update settings', 'error'); }
+};
+
+document.getElementById('btnRunAutoUpdate').onclick = async () => {
+  const btn = document.getElementById('btnRunAutoUpdate');
+  const orig = btn.textContent;
+  btn.textContent = 'Running…'; btn.disabled = true;
+  try {
+    // Persist current form values first so the run uses them
+    await api('/api/system/autoupdate', 'POST', collectAutoUpdatePayload());
+    const r = await api('/api/system/autoupdate/run', 'POST');
+    const res = await r.json();
+    if (res.skipped) {
+      toast(res.message || 'A run is already in progress.', 'info');
+    } else if (res.error) {
+      toast('Run failed: ' + res.error, 'error');
+    } else {
+      toast(res.summary || 'Auto-update run complete.', 'success');
+      // Refresh last-run display
+      const cfgR = await api('/api/system/autoupdate');
+      if (cfgR.ok) renderAutoUpdateLastRun(await cfgR.json());
+      loadContainers();
+    }
+  } catch (e) {
+    toast('Error running auto-update: ' + e.message, 'error');
+  } finally {
+    btn.textContent = orig; btn.disabled = false;
+  }
+};
+
 /* ─── AI Model Selects ─────────────────────────────────────────────────────── */
 const providerModels = {
   openai: ["gpt-5", "gpt-5-pro", "gpt-5-chat", "gpt-5.1", "o3-mini", "o1", "o1-preview", "gpt-4.5-turbo", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
@@ -2159,7 +2248,9 @@ document.addEventListener('DOMContentLoaded', () => {
       auto_restart: document.getElementById('monAutoRestart').checked,
       auto_start_on_stop: document.getElementById('monAutoStartOnStop').checked,
       monitor_logs: document.getElementById('monLogs').checked,
-      log_patterns: document.getElementById('monPatterns').value.split(',').map(p => p.trim()).filter(p => p)
+      log_patterns: document.getElementById('monPatterns').value.split(',').map(p => p.trim()).filter(p => p),
+      auto_update: document.getElementById('monAutoUpdate').checked,
+      auto_update_monitor_only: document.getElementById('monAutoUpdateMonitorOnly').checked
     };
     try {
       await api(`/api/containers/${selectedId}/monitoring`, 'POST', conf);
@@ -2169,11 +2260,42 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  ['monEnabled', 'monAutoRestart', 'monAutoStartOnStop', 'monLogs'].forEach(id => {
+  ['monEnabled', 'monAutoRestart', 'monAutoStartOnStop', 'monLogs', 'monAutoUpdate', 'monAutoUpdateMonitorOnly'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', saveMonitoring);
   });
   document.getElementById('monPatterns').addEventListener('input', debounce(saveMonitoring, 1000));
+
+  // --- Per-container "Check for update now" ---
+  const btnCheckUpdate = document.getElementById('btnCheckUpdate');
+  if (btnCheckUpdate) {
+    btnCheckUpdate.onclick = async () => {
+      if (!selectedId) return;
+      const out = document.getElementById('updateCheckResult');
+      btnCheckUpdate.disabled = true;
+      out.style.color = 'var(--text-muted)';
+      out.textContent = 'Checking…';
+      try {
+        const r = await api(`/api/containers/${selectedId}/update-check`);
+        const res = await r.json();
+        if (res.error) {
+          out.style.color = 'var(--danger, #e5534b)';
+          out.textContent = res.error;
+        } else if (res.available) {
+          out.style.color = 'var(--warning, #d29922)';
+          out.textContent = '⬆ Update available for ' + (res.image || 'image');
+        } else {
+          out.style.color = 'var(--success, #3fb950)';
+          out.textContent = '✓ Up to date (' + (res.image || 'image') + ')';
+        }
+      } catch (e) {
+        out.style.color = 'var(--danger, #e5534b)';
+        out.textContent = 'Check failed: ' + e.message;
+      } finally {
+        btnCheckUpdate.disabled = false;
+      }
+    };
+  }
 
   // --- Notification Test ---
   window.testNotification = async (provider, e) => {

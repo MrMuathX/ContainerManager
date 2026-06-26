@@ -5,6 +5,7 @@ from pathlib import Path
 SYSTEM_CONFIG_FILE = Path("data/system_config.json")
 NOTIFICATION_SETTINGS_FILE = Path("data/notification_settings.json")
 CONTAINER_MONITORING_FILE = Path("data/container_monitoring.json")
+AUTOUPDATE_CONFIG_FILE = Path("data/autoupdate_config.json")
 
 class Settings:
     def __init__(self):
@@ -57,5 +58,15 @@ class Settings:
                 self.container_monitoring = json.loads(CONTAINER_MONITORING_FILE.read_text())
             except Exception as e:
                 print(f"Error loading container_monitoring.json: {e}")
+
+        # Load auto-update (Watchtower-style) config
+        from app.models import AutoUpdateSettings
+        self.autoupdate = AutoUpdateSettings()
+        if AUTOUPDATE_CONFIG_FILE.exists():
+            try:
+                data = json.loads(AUTOUPDATE_CONFIG_FILE.read_text())
+                self.autoupdate = AutoUpdateSettings(**data)
+            except Exception as e:
+                print(f"Error loading autoupdate_config.json: {e}")
 
 settings = Settings()

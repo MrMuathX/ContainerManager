@@ -380,28 +380,160 @@ async def stream_logs(container_id: str) -> AsyncGenerator[str, None]:
     except Exception as e:
         yield f"[Error streaming logs] {str(e)}"
 
-async def update_container(container_id: str):
-    """
-    Async generator yielding JSON progress lines.
-    Pulls the latest image, then recreates the container.
-    """
-    client = _get_client()
-    c = client.containers.get(container_id)
-    image_tag = c.image.tags[0] if c.image.tags else None
+def _get_image_tag(c: Container) -> Optional[str]:
+    """Return the first repo:tag for the container's image, or None."""
+    try:
+        tags = getattr(c.image, "tags", []) if c.image else []
+        return tags[0] if tags else None
+    except Exception:
+        return None
 
-    if not image_tag:
-        yield json.dumps({"status": "error", "message": "Container has no image tag; cannot pull."})
-        return
 
-    # Capture container config for recreation
+def _recreate_container_preserve_config(client: docker.DockerClient, c: Container, image_tag: str) -> Container:
+    """
+    Stop and remove the existing container, then recreate it from the SAME
+    inspect config using the (already pulled) image_tag. This mirrors how
+    Watchtower recreates a container while preserving its configuration:
+    env, labels, ports, volumes, restart policy, network, command, entrypoint.
+    Returns the new container.
+    """
     attrs = c.attrs
     host_config = attrs.get("HostConfig", {})
     config = attrs.get("Config", {})
     name = c.name.lstrip("/")
 
+    c.stop(timeout=10)
+    c.remove(force=True)
+
+    port_bindings = host_config.get("PortBindings") or {}
+    volumes = host_config.get("Binds") or []
+    env = config.get("Env") or []
+    labels = config.get("Labels") or {}
+    restart_policy = host_config.get("RestartPolicy") or {"Name": "no"}
+    network_mode = host_config.get("NetworkMode", "bridge")
+    command = config.get("Cmd")
+    entrypoint = config.get("Entrypoint")
+    working_dir = config.get("WorkingDir") or None
+    user = config.get("User") or None
+
+    # Port conflict resolution (host ports may have been freed by removal above)
+    raw_ports = {k: [(b["HostIp"], b["HostPort"]) for b in v] for k, v in port_bindings.items() if v} if port_bindings else {}
+    resolved_ports = resolve_port_conflicts(client, raw_ports) if raw_ports else {}
+
+    return client.containers.run(
+        image_tag,
+        name=name,
+        detach=True,
+        environment=env,
+        labels=labels,
+        ports=resolved_ports,
+        volumes=volumes,
+        restart_policy=restart_policy,
+        network_mode=network_mode,
+        command=command,
+        entrypoint=entrypoint,
+        working_dir=working_dir,
+        user=user,
+    )
+
+
+def check_image_update(container_id: str, pull: bool = True) -> dict:
+    """
+    Watchtower-style update check.
+
+    Pulls the latest image for the container's current tag, then compares the
+    running container's image ID with the freshly resolved local image ID.
+    If they differ, a newer image is available. With pull=False it only
+    compares against the local image (no registry round-trip).
+
+    Returns: {available, image, current_image_id, latest_image_id, error}
+    """
+    client = _get_client()
+    c = client.containers.get(container_id)
+    image_tag = _get_image_tag(c)
+    if not image_tag:
+        return {"available": False, "image": None, "current_image_id": None,
+                "latest_image_id": None, "error": "Container has no image tag; cannot check for updates."}
+
+    current_id = c.image.id if c.image else None
+    try:
+        if pull:
+            client.images.pull(image_tag)
+        latest = client.images.get(image_tag)
+    except Exception as e:
+        return {"available": False, "image": image_tag, "current_image_id": current_id,
+                "latest_image_id": None, "error": f"Could not pull/inspect image: {e}"}
+
+    return {
+        "available": bool(latest.id and latest.id != current_id),
+        "image": image_tag,
+        "current_image_id": current_id,
+        "latest_image_id": latest.id,
+        "error": None,
+    }
+
+
+def auto_update_container(container_id: str, cleanup: bool = True) -> dict:
+    """
+    Synchronous, non-streaming Watchtower-style update used by the background
+    auto-updater. Checks for a newer image and, if found, recreates the
+    container preserving its config. Optionally removes the old image.
+
+    Returns: {name, updated, image, new_id, old_image_id, latest_image_id, error}
+    """
+    client = _get_client()
+    c = client.containers.get(container_id)
+    name = c.name.lstrip("/")
+
+    check = check_image_update(container_id, pull=True)
+    if check.get("error"):
+        return {"name": name, "updated": False, "image": check.get("image"), "error": check["error"]}
+    if not check["available"]:
+        return {"name": name, "updated": False, "image": check["image"], "error": None}
+
+    image_tag = check["image"]
+    old_image_id = check["current_image_id"]
+    try:
+        new_container = _recreate_container_preserve_config(client, c, image_tag)
+    except Exception as e:
+        return {"name": name, "updated": False, "image": image_tag, "error": f"Recreate failed: {e}"}
+
+    # Optional cleanup of the now-unused old image (best effort)
+    if cleanup and old_image_id and old_image_id != check["latest_image_id"]:
+        try:
+            client.images.remove(old_image_id, force=False)
+        except Exception:
+            pass
+
+    return {
+        "name": name,
+        "updated": True,
+        "image": image_tag,
+        "new_id": new_container.short_id,
+        "old_image_id": old_image_id,
+        "latest_image_id": check["latest_image_id"],
+        "error": None,
+    }
+
+
+async def update_container(container_id: str, cleanup: bool = False):
+    """
+    Async generator yielding JSON progress lines.
+    Pulls the latest image, then recreates the container preserving config.
+    """
+    client = _get_client()
+    c = client.containers.get(container_id)
+    image_tag = _get_image_tag(c)
+
+    if not image_tag:
+        yield json.dumps({"status": "error", "message": "Container has no image tag; cannot pull."})
+        return
+
+    name = c.name.lstrip("/")
+    old_image_id = c.image.id if c.image else None
+
     yield json.dumps({"status": "pulling", "message": f"Pulling {image_tag}..."})
 
-    loop = asyncio.get_event_loop()
     try:
         for line in client.api.pull(image_tag, stream=True, decode=True):
             status = line.get("status", "")
@@ -413,43 +545,24 @@ async def update_container(container_id: str):
         yield json.dumps({"status": "error", "message": f"Pull failed: {e}"})
         return
 
-    yield json.dumps({"status": "recreating", "message": "Stopping old container..."})
+    yield json.dumps({"status": "recreating", "message": "Stopping old container and starting new one..."})
     try:
-        c.stop(timeout=10)
-        c.remove(force=True)
-    except Exception as e:
-        yield json.dumps({"status": "error", "message": f"Remove failed: {e}"})
-        return
-
-    yield json.dumps({"status": "recreating", "message": "Starting new container..."})
-    try:
-        # Rebuild port bindings
-        port_bindings = host_config.get("PortBindings") or {}
-        exposed_ports = config.get("ExposedPorts") or {}
-        volumes = host_config.get("Binds") or []
-        env = config.get("Env") or []
-        labels = config.get("Labels") or {}
-        restart_policy = host_config.get("RestartPolicy") or {"Name": "no"}
-        network_mode = host_config.get("NetworkMode", "bridge")
-
-        # Port conflict resolution
-        raw_ports = {k: [(b["HostIp"], b["HostPort"]) for b in v] for k, v in port_bindings.items() if v} if port_bindings else {}
-        resolved_ports = resolve_port_conflicts(client, raw_ports) if raw_ports else {}
-
-        new_container = client.containers.run(
-            image_tag,
-            name=name,
-            detach=True,
-            environment=env,
-            labels=labels,
-            ports=resolved_ports,
-            volumes=volumes,
-            restart_policy=restart_policy,
-            network_mode=network_mode,
+        new_container = await asyncio.to_thread(
+            _recreate_container_preserve_config, client, c, image_tag
         )
-        yield json.dumps({"status": "done", "message": f"Container {name} updated and running.", "id": new_container.short_id})
     except Exception as e:
         yield json.dumps({"status": "error", "message": f"Recreation failed: {e}"})
+        return
+
+    if cleanup and old_image_id:
+        try:
+            latest_id = client.images.get(image_tag).id
+            if latest_id != old_image_id:
+                await asyncio.to_thread(client.images.remove, old_image_id, False)
+        except Exception:
+            pass
+
+    yield json.dumps({"status": "done", "message": f"Container {name} updated and running.", "id": new_container.short_id})
 
 def export_container_image(container_id: str):
     """Returns a generator yielding the container's image as a tar archive."""

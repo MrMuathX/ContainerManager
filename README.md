@@ -13,6 +13,7 @@
 | **Terminal** | Interactive PTY in the container (xterm.js + WebSocket) |
 | **Images** | Push local images to a registry with progress feedback |
 | **Updates** | Pull latest image and recreate the container |
+| **Auto-Update** | Watchtower-style scheduled image checks; auto-recreate containers on new images (opt-in, monitor-only, cleanup, label-aware) |
 | **Backups** | Full per-container or multi-select ZIP backups (image + writable layer + named volumes) with import/restore |
 | **App settings backup** | Export/import app settings as ZIP (`system`, notifications, monitoring, AI config) |
 | **Auth** | Cookie-based login (password from env / system config) |
@@ -64,6 +65,39 @@ Additional settings (MQTT, AI keys, notifications) can be adjusted from the **Sy
 
 Containers appear as **Switch** entities; you can automate start/stop/restart from HA.
 
+## Auto-Update (Watchtower-style)
+
+ContainerManager can automatically keep your containers up to date, inspired by
+[Watchtower](https://github.com/nicholas-fedor/watchtower). On a schedule it pulls the latest
+image for each eligible container, compares image digests, and — when a newer image is
+found — recreates the container in place while **preserving its configuration** (env, ports,
+volumes, labels, restart policy, network, command).
+
+**Configure it** from the **Updates** button in the header:
+
+| Option | Description |
+|--------|-------------|
+| **Enable auto-updater** | Master switch for the background updater |
+| **Check interval** | How often to poll (default 24h, like Watchtower) |
+| **Scope** | `opt-in` (only flagged containers, recommended) or `all` running containers |
+| **Monitor only** | Check and notify, but never apply updates |
+| **Remove old images** | Clean up the previous image after a successful update |
+| **Send notifications** | Notify (email/Telegram/Discord/webhook) on update events |
+| **Honor Watchtower labels** | Respect `com.centurylinklabs.watchtower.*` labels |
+
+**Per-container** opt-in/monitor-only toggles live in each container's **Monitoring** card,
+along with a **Check for update now** button. You can also use **Watchtower-compatible labels**:
+
+```yaml
+labels:
+  com.centurylinklabs.watchtower.enable: "true"          # opt this container in
+  com.centurylinklabs.watchtower.enable: "false"         # never auto-update this container
+  com.centurylinklabs.watchtower.monitor-only: "true"    # check & notify only
+```
+
+Only containers with an actual newer image are recreated, so enabling this is safe and
+idempotent. Settings persist to `data/autoupdate_config.json`.
+
 ## Security notes
 
 - The stack needs access to **`/var/run/docker.sock`** — treat this as **highly privileged**.
@@ -86,6 +120,7 @@ ContainerManager/
 │   └── services/
 │       ├── docker_service.py
 │       ├── ha_mqtt.py
+│       ├── autoupdate_service.py # Watchtower-style scheduled image updates
 │       ├── monitoring_service.py
 │       ├── notification_service.py
 │       └── ai_gateway.py

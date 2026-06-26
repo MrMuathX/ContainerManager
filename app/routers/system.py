@@ -4,7 +4,7 @@ from typing import List
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from app.models import SystemStats, NotificationSettings
+from app.models import SystemStats, NotificationSettings, AutoUpdateSettings
 from pathlib import Path
 import io
 import json
@@ -21,10 +21,13 @@ from app.services.ai_gateway import CONFIG_FILE as AI_CONFIG_FILE
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
+from app.config import AUTOUPDATE_CONFIG_FILE
+
 SETTINGS_FILES = {
     "system_config.json": SYSTEM_CONFIG_FILE,
     "notification_settings.json": NOTIFICATION_SETTINGS_FILE,
     "container_monitoring.json": CONTAINER_MONITORING_FILE,
+    "autoupdate_config.json": AUTOUPDATE_CONFIG_FILE,
     "ai_config.json": Path(AI_CONFIG_FILE),
 }
 
@@ -237,6 +240,29 @@ async def test_notification(provider: str, config: NotificationSettings):
     if not result["success"]:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail=result["message"])
+    return result
+
+
+# ── Auto-Update (Watchtower-style) ────────────────────────────────────────────
+
+@router.get("/autoupdate", response_model=AutoUpdateSettings)
+def get_autoupdate_settings():
+    from app.services.autoupdate_service import get_settings
+    return get_settings()
+
+
+@router.post("/autoupdate")
+def update_autoupdate_settings(config: AutoUpdateSettings):
+    from app.services.autoupdate_service import save_settings
+    save_settings(config)
+    return {"status": "success", "message": "Auto-update settings saved."}
+
+
+@router.post("/autoupdate/run")
+async def run_autoupdate_now():
+    """Trigger an immediate auto-update pass and return its summary."""
+    from app.services.autoupdate_service import autoupdate_service
+    result = await autoupdate_service.run_cycle(manual=True)
     return result
 
 

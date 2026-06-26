@@ -92,6 +92,16 @@ def get_logs(container_id: str, tail: int = 200):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/{container_id}/update-check")
+async def check_for_update(container_id: str):
+    """Watchtower-style check: is a newer image available for this container?"""
+    try:
+        result = await asyncio.to_thread(docker_service.check_image_update, container_id, True)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/{container_id}/pull")
 async def pull_image(container_id: str):
     """Stream pull+recreate progress as NDJSON."""

@@ -93,6 +93,14 @@
         </svg>
         Alerts
       </button>
+      <button class="btn btn-ghost" id="btnAutoUpdate" title="Auto-Update Settings (Watchtower-style)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M23 4v6h-6" />
+          <path d="M1 20v-6h6" />
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+        </svg>
+        Updates
+      </button>
       <button class="btn btn-ghost" id="btnLogout" title="Logout">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -310,6 +318,38 @@
                     Log Patterns (comma separated)
                     <input type="text" id="monPatterns" class="modal-input" placeholder="error,panic,fatal"
                       style="margin-top:4px;" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="info-card">
+              <h4>Auto-Update <span style="font-size:11px; color:var(--text-muted); font-weight:400;">(Watchtower-style)</span></h4>
+              <div class="card-content">
+                <div style="display:flex; flex-direction:column; gap:12px; margin-top:8px;">
+                  <label class="toggle-label"
+                    style="justify-content:space-between; width:100%; border-bottom:1px solid var(--border); padding-bottom:8px;">
+                    <span>Auto-Update this container</span>
+                    <label class="toggle-wrapper">
+                      <input type="checkbox" id="monAutoUpdate" />
+                      <span class="toggle-switch"></span>
+                    </label>
+                  </label>
+                  <label class="toggle-label"
+                    style="justify-content:space-between; width:100%; border-bottom:1px solid var(--border); padding-bottom:8px;">
+                    <span>Monitor only (notify, don't apply)</span>
+                    <label class="toggle-wrapper">
+                      <input type="checkbox" id="monAutoUpdateMonitorOnly" />
+                      <span class="toggle-switch"></span>
+                    </label>
+                  </label>
+                  <div style="display:flex; align-items:center; gap:10px; margin-top:4px;">
+                    <button class="btn btn-sm btn-secondary" id="btnCheckUpdate" type="button">Check for update now</button>
+                    <span id="updateCheckResult" style="font-size:12px; color:var(--text-muted);"></span>
+                  </div>
+                  <div style="font-size:11px; color:var(--text-muted);">
+                    Requires the global auto-updater to be enabled (click the <b>Updates</b> button in the header to
+                    configure schedule &amp; scope). Honors <code>com.centurylinklabs.watchtower.enable</code> labels.
                   </div>
                 </div>
               </div>
@@ -647,6 +687,85 @@
           style="margin-right: auto; border: 1px solid var(--border);">Test MQTT</button>
         <button class="btn btn-ghost" id="btnCancelMQTTConfig">Cancel</button>
         <button class="btn btn-primary" id="btnSaveMQTTConfig">Save &amp; Restart</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Auto-Update Settings Modal -->
+  <div class="modal-overlay" id="autoUpdateModal" style="display:none">
+    <div class="modal ports-modal" style="width: 460px; max-height: 90vh; overflow-y: auto;">
+      <h3>Auto-Update <span style="font-size:13px; color:var(--text-muted); font-weight:400;">(Watchtower-style)</span></h3>
+      <p style="color:var(--text-muted); font-size: 13px; margin-bottom: 16px;">
+        Periodically pull newer images and recreate containers in place, preserving their configuration.
+      </p>
+
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <label class="toggle-label" style="justify-content:space-between; width:100%;">
+          <span><b>Enable auto-updater</b></span>
+          <label class="toggle-wrapper">
+            <input type="checkbox" id="auEnabled" />
+            <span class="toggle-switch"></span>
+          </label>
+        </label>
+
+        <div>
+          <label style="font-size:12px; color:var(--text-muted);">Check interval</label>
+          <select id="auInterval" class="modal-input">
+            <option value="3600">Every hour</option>
+            <option value="21600">Every 6 hours</option>
+            <option value="43200">Every 12 hours</option>
+            <option value="86400">Every 24 hours (default)</option>
+            <option value="604800">Every week</option>
+          </select>
+        </div>
+
+        <div>
+          <label style="font-size:12px; color:var(--text-muted);">Scope</label>
+          <select id="auScope" class="modal-input">
+            <option value="opt-in">Opt-in — only containers you flag (recommended)</option>
+            <option value="all">All running containers</option>
+          </select>
+        </div>
+
+        <label class="toggle-label" style="justify-content:space-between; width:100%;">
+          <span>Monitor only (notify, never apply)</span>
+          <label class="toggle-wrapper">
+            <input type="checkbox" id="auMonitorOnly" />
+            <span class="toggle-switch"></span>
+          </label>
+        </label>
+
+        <label class="toggle-label" style="justify-content:space-between; width:100%;">
+          <span>Remove old images after update</span>
+          <label class="toggle-wrapper">
+            <input type="checkbox" id="auCleanup" />
+            <span class="toggle-switch"></span>
+          </label>
+        </label>
+
+        <label class="toggle-label" style="justify-content:space-between; width:100%;">
+          <span>Send notifications on updates</span>
+          <label class="toggle-wrapper">
+            <input type="checkbox" id="auNotify" />
+            <span class="toggle-switch"></span>
+          </label>
+        </label>
+
+        <label class="toggle-label" style="justify-content:space-between; width:100%;">
+          <span>Honor Watchtower labels</span>
+          <label class="toggle-wrapper">
+            <input type="checkbox" id="auRespectLabels" />
+            <span class="toggle-switch"></span>
+          </label>
+        </label>
+
+        <div id="auLastRun" style="font-size:12px; color:var(--text-muted);"></div>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+        <button class="btn btn-ghost" id="btnRunAutoUpdate" style="margin-right:auto; border:1px solid var(--border);">Run now</button>
+        <button class="btn btn-ghost" id="btnCancelAutoUpdate">Cancel</button>
+        <button class="btn btn-primary" id="btnSaveAutoUpdate">Save</button>
       </div>
     </div>
   </div>

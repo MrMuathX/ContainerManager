@@ -45,6 +45,11 @@ async def lifespan(app: FastAPI):
     m_task = asyncio.create_task(monitoring_background_task(settings.APP_URL))
     logger.info("Monitoring background task started.")
 
+    # Start Auto-Update (Watchtower-style) background task
+    from app.services.autoupdate_service import autoupdate_background_task
+    au_task = asyncio.create_task(autoupdate_background_task())
+    logger.info("Auto-update background task started.")
+
     yield
 
     if task:
@@ -53,10 +58,16 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
-    
+
     m_task.cancel()
     try:
         await m_task
+    except asyncio.CancelledError:
+        pass
+
+    au_task.cancel()
+    try:
+        await au_task
     except asyncio.CancelledError:
         pass
 
