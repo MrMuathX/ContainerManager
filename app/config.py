@@ -6,6 +6,7 @@ SYSTEM_CONFIG_FILE = Path("data/system_config.json")
 NOTIFICATION_SETTINGS_FILE = Path("data/notification_settings.json")
 CONTAINER_MONITORING_FILE = Path("data/container_monitoring.json")
 AUTOUPDATE_CONFIG_FILE = Path("data/autoupdate_config.json")
+GIT_APPS_FILE = Path("data/git_apps.json")
 
 class Settings:
     def __init__(self):
@@ -101,5 +102,13 @@ class Settings:
                 self.autoupdate = AutoUpdateSettings(**data)
             except Exception as e:
                 print(f"Error loading autoupdate_config.json: {e}")
+
+        # Load Git-based apps (Coolify-style deploy-from-GitHub)
+        self.git_apps = {}
+        if GIT_APPS_FILE.exists():
+            try:
+                self.git_apps = json.loads(GIT_APPS_FILE.read_text())
+            except Exception as e:
+                print(f"Error loading git_apps.json: {e}")
 
 settings = Settings()

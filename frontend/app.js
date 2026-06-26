@@ -1874,6 +1874,226 @@ document.getElementById('btnRunAutoUpdate').onclick = async () => {
   }
 };
 
+/* ─── Git Deploy (Coolify-style deploy-from-GitHub) ───────────────────────── */
+
+window.copyText = (id) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.select();
+  navigator.clipboard?.writeText(el.value).then(
+    () => toast('Copied', 'success'),
+    () => toast('Copy failed', 'error')
+  );
+};
+
+let gitDeployPollTimer = null;
+
+function gitShowView(view) {
+  document.getElementById('gitListView').style.display = view === 'list' ? '' : 'none';
+  document.getElementById('gitFormView').style.display = view === 'form' ? '' : 'none';
+  document.getElementById('gitWebhookPanel').style.display = view === 'webhook' ? '' : 'none';
+  document.getElementById('gitDeployPanel').style.display = view === 'deploy' ? '' : 'none';
+  document.getElementById('btnGitAddApp').style.display = view === 'list' ? '' : 'none';
+}
+
+function gitDeployBadge(last) {
+  if (!last) return '<span style="color:var(--text-muted); font-size:11px;">never deployed</span>';
+  const color = last.status === 'success' ? 'var(--success,#3fb950)'
+    : last.status === 'failed' ? 'var(--danger,#e5534b)' : 'var(--text-muted)';
+  const when = last.timestamp ? new Date(last.timestamp).toLocaleString() : '';
+  const commit = last.commit ? ` (${last.commit})` : '';
+  return `<span style="color:${color}; font-size:11px;">${last.status}${commit} · ${when}</span>`;
+}
+
+async function loadGitApps() {
+  const list = document.getElementById('gitAppsList');
+  const empty = document.getElementById('gitAppsEmpty');
+  list.innerHTML = '';
+  try {
+    const r = await api('/api/git/apps');
+    const apps = await r.json();
+    if (!apps.length) { empty.style.display = ''; return; }
+    empty.style.display = 'none';
+    apps.forEach(app => {
+      const row = document.createElement('div');
+      row.style.cssText = 'border:1px solid var(--border); border-radius:8px; padding:10px; display:flex; flex-direction:column; gap:6px;';
+      row.innerHTML = `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+          <div style="min-width:0;">
+            <div style="font-weight:600; overflow:hidden; text-overflow:ellipsis;">${app.name}</div>
+            <div style="font-size:11px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis;">
+              ${app.repo_url} · ${app.branch}${app.auto_deploy ? ' · auto-deploy' : ''}
+            </div>
+            <div>${gitDeployBadge(app.last_deploy)}</div>
+          </div>
+          <div style="display:flex; gap:6px; flex-shrink:0;">
+            <button class="btn btn-sm btn-primary" data-act="deploy">Deploy</button>
+            <button class="btn btn-sm btn-secondary" data-act="webhook">Webhook</button>
+            <button class="btn btn-sm btn-ghost" data-act="edit">Edit</button>
+            <button class="btn btn-sm btn-ghost" data-act="delete" style="color:var(--danger,#e5534b);">✕</button>
+          </div>
+        </div>`;
+      row.querySelector('[data-act="deploy"]').onclick = () => deployGitApp(app.id, app.name);
+      row.querySelector('[data-act="webhook"]').onclick = () => showGitWebhook(app.id);
+      row.querySelector('[data-act="edit"]').onclick = () => showGitForm(app);
+      row.querySelector('[data-act="delete"]').onclick = () => deleteGitApp(app.id, app.name);
+      list.appendChild(row);
+    });
+  } catch (e) { toast('Error loading apps: ' + e.message, 'error'); }
+}
+
+function showGitForm(app) {
+  gitShowView('form');
+  document.getElementById('gitEditId').value = app ? app.id : '';
+  document.getElementById('gitRepoUrl').value = app ? app.repo_url : '';
+  document.getElementById('gitName').value = app ? (app.name || '') : '';
+  document.getElementById('gitBranch').value = app ? app.branch : 'main';
+  document.getElementById('gitContext').value = app ? (app.build_context || '.') : '.';
+  document.getElementById('gitDockerfile').value = app ? (app.dockerfile || 'Dockerfile') : 'Dockerfile';
+  document.getElementById('gitContainerName').value = app ? (app.container_name || '') : '';
+  document.getElementById('gitRestart').value = app ? (app.restart_policy || 'unless-stopped') : 'unless-stopped';
+  document.getElementById('gitNetwork').value = app ? (app.network_mode || 'bridge') : 'bridge';
+  document.getElementById('gitAutoDeploy').checked = app ? !!app.auto_deploy : true;
+  document.getElementById('gitToken').value = '';
+  document.getElementById('gitToken').placeholder = app && app.has_private_token
+    ? '•••••• (leave blank to keep)' : 'ghp_… (leave blank for public repos)';
+  // Ports map -> "host:container" list
+  const ports = app && app.ports ? Object.entries(app.ports).map(([cp, hp]) => {
+    const cport = cp.split('/')[0];
+    return `${hp}:${cport}`;
+  }).join(', ') : '';
+  document.getElementById('gitPorts').value = ports;
+  document.getElementById('gitEnv').value = app && app.env ? app.env.join('\n') : '';
+  document.getElementById('gitVolumes').value = app && app.volumes ? app.volumes.join('\n') : '';
+}
+
+function collectGitPayload() {
+  // Ports "8080:80" -> {"80/tcp": "8080"}
+  const ports = {};
+  document.getElementById('gitPorts').value.split(',').map(s => s.trim()).filter(Boolean).forEach(pair => {
+    const [host, cont] = pair.split(':').map(s => s.trim());
+    if (host && cont) ports[`${cont}/tcp`] = host;
+  });
+  return {
+    repo_url: document.getElementById('gitRepoUrl').value.trim(),
+    name: document.getElementById('gitName').value.trim(),
+    branch: document.getElementById('gitBranch').value.trim() || 'main',
+    build_context: document.getElementById('gitContext').value.trim() || '.',
+    dockerfile: document.getElementById('gitDockerfile').value.trim() || 'Dockerfile',
+    container_name: document.getElementById('gitContainerName').value.trim(),
+    restart_policy: document.getElementById('gitRestart').value,
+    network_mode: document.getElementById('gitNetwork').value.trim() || 'bridge',
+    auto_deploy: document.getElementById('gitAutoDeploy').checked,
+    private_token: document.getElementById('gitToken').value,
+    ports,
+    env: document.getElementById('gitEnv').value.split('\n').map(s => s.trim()).filter(Boolean),
+    volumes: document.getElementById('gitVolumes').value.split('\n').map(s => s.trim()).filter(Boolean)
+  };
+}
+
+async function showGitWebhook(appId) {
+  try {
+    const r = await api(`/api/git/apps/${appId}/webhook-info`);
+    const info = await r.json();
+    document.getElementById('gitWhUrl').value = info.url;
+    document.getElementById('gitWhSecret').value = info.secret;
+    gitShowView('webhook');
+  } catch (e) { toast('Error loading webhook info: ' + e.message, 'error'); }
+}
+
+async function deleteGitApp(appId, name) {
+  if (!confirm(`Delete app "${name}" and remove its container?`)) return;
+  try {
+    await api(`/api/git/apps/${appId}?remove_container=true`, 'DELETE');
+    toast('Deleted', 'success');
+    loadGitApps();
+    loadContainers();
+  } catch (e) { toast('Delete failed: ' + e.message, 'error'); }
+}
+
+async function deployGitApp(appId, name) {
+  gitShowView('deploy');
+  document.getElementById('gitDeployTitle').textContent = `Deploying ${name || appId}…`;
+  document.getElementById('gitDeployStatus').textContent = 'running';
+  const logEl = document.getElementById('gitDeployLog');
+  logEl.textContent = '';
+  try {
+    const r = await api(`/api/git/apps/${appId}/deploy`, 'POST');
+    const { job_id } = await r.json();
+    pollDeployJob(appId, job_id);
+  } catch (e) {
+    document.getElementById('gitDeployStatus').textContent = 'error';
+    logEl.textContent += `\n[error] ${e.message}`;
+  }
+}
+
+function pollDeployJob(appId, jobId) {
+  if (gitDeployPollTimer) clearInterval(gitDeployPollTimer);
+  let lastSeq = 0;
+  const logEl = document.getElementById('gitDeployLog');
+  const statusEl = document.getElementById('gitDeployStatus');
+  gitDeployPollTimer = setInterval(async () => {
+    try {
+      const r = await api(`/api/git/apps/${appId}/deploy/${jobId}`);
+      const job = await r.json();
+      (job.logs || []).filter(l => l.seq > lastSeq).forEach(l => {
+        lastSeq = l.seq;
+        const prefix = l.level === 'error' ? '[error] ' : '';
+        logEl.textContent += prefix + l.message + '\n';
+      });
+      logEl.scrollTop = logEl.scrollHeight;
+      statusEl.textContent = job.status;
+      if (job.status === 'done' || job.status === 'error') {
+        clearInterval(gitDeployPollTimer);
+        gitDeployPollTimer = null;
+        statusEl.style.color = job.status === 'done' ? 'var(--success,#3fb950)' : 'var(--danger,#e5534b)';
+        if (job.status === 'done') { toast('Deploy complete', 'success'); loadContainers(); }
+        else toast('Deploy failed', 'error');
+      }
+    } catch (e) {
+      clearInterval(gitDeployPollTimer);
+      gitDeployPollTimer = null;
+      statusEl.textContent = 'error';
+    }
+  }, 1200);
+}
+
+document.getElementById('btnGitDeploy').onclick = () => {
+  gitShowView('list');
+  loadGitApps();
+  document.getElementById('gitDeployModal').style.display = 'flex';
+};
+document.getElementById('btnGitClose').onclick = () => {
+  if (gitDeployPollTimer) { clearInterval(gitDeployPollTimer); gitDeployPollTimer = null; }
+  document.getElementById('gitDeployModal').style.display = 'none';
+};
+document.getElementById('btnGitAddApp').onclick = () => showGitForm(null);
+document.getElementById('btnGitFormCancel').onclick = () => { gitShowView('list'); loadGitApps(); };
+document.getElementById('btnGitWhDone').onclick = () => { gitShowView('list'); loadGitApps(); };
+document.getElementById('btnGitDeployClose').onclick = () => { gitShowView('list'); loadGitApps(); };
+
+document.getElementById('btnGitFormSave').onclick = async () => {
+  const payload = collectGitPayload();
+  if (!payload.repo_url) return toast('Repository URL is required', 'error');
+  const editId = document.getElementById('gitEditId').value;
+  const btn = document.getElementById('btnGitFormSave');
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Saving…';
+  try {
+    let app;
+    if (editId) {
+      const r = await api(`/api/git/apps/${editId}`, 'PUT', payload);
+      app = await r.json();
+    } else {
+      const r = await api('/api/git/apps', 'POST', payload);
+      app = await r.json();
+    }
+    toast('Saved', 'success');
+    showGitWebhook(app.id);
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'error');
+  } finally { btn.disabled = false; btn.textContent = orig; }
+};
+
 /* ─── AI Model Selects ─────────────────────────────────────────────────────── */
 const providerModels = {
   openai: ["gpt-5", "gpt-5-pro", "gpt-5-chat", "gpt-5.1", "o3-mini", "o1", "o1-preview", "gpt-4.5-turbo", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],

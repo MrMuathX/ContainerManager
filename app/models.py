@@ -113,6 +113,32 @@ class ContainerMonitoringConfig(BaseModel):
     auto_update_monitor_only: bool = False
 
 
+class GitApp(BaseModel):
+    """A Coolify-style application deployed from a GitHub repository.
+
+    The container image is built from the repo's Dockerfile and (re)deployed
+    automatically when GitHub sends a push webhook for the tracked branch.
+    """
+    id: str = ""                              # url-safe slug, generated if empty
+    name: str = ""
+    repo_url: str = ""                        # e.g. https://github.com/user/repo
+    branch: str = "main"
+    build_context: str = "."                  # subdir within the repo
+    dockerfile: str = "Dockerfile"            # relative to build_context
+    image_name: str = ""                      # generated: cm-git/<id>:latest
+    container_name: str = ""                  # defaults to id
+    env: List[str] = []                       # ["KEY=VALUE", ...]
+    ports: Dict[str, str] = {}                # {"8080/tcp": "8080"}
+    volumes: List[str] = []                   # ["/host:/container", ...]
+    restart_policy: str = "unless-stopped"
+    network_mode: str = "bridge"
+    auto_deploy: bool = True                  # redeploy on push webhook
+    webhook_secret: str = ""                  # HMAC secret for GitHub webhook
+    private_token: str = ""                   # optional PAT for private repos
+    created_at: Optional[str] = None
+    last_deploy: Optional[Dict[str, Any]] = None  # {status, commit, message, timestamp}
+
+
 class AutoUpdateSettings(BaseModel):
     """Global Watchtower-style auto-update configuration."""
     enabled: bool = False                # master switch for the background updater

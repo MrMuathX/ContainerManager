@@ -93,6 +93,14 @@
         </svg>
         Alerts
       </button>
+      <button class="btn btn-ghost" id="btnGitDeploy" title="Deploy from GitHub (auto-deploy on push)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="18" cy="18" r="3" />
+          <circle cx="6" cy="6" r="3" />
+          <path d="M6 21V9a9 9 0 0 0 9 9" />
+        </svg>
+        Deploy
+      </button>
       <button class="btn btn-ghost" id="btnAutoUpdate" title="Auto-Update Settings (Watchtower-style)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M23 4v6h-6" />
@@ -687,6 +695,140 @@
           style="margin-right: auto; border: 1px solid var(--border);">Test MQTT</button>
         <button class="btn btn-ghost" id="btnCancelMQTTConfig">Cancel</button>
         <button class="btn btn-primary" id="btnSaveMQTTConfig">Save &amp; Restart</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Git Deploy Modal -->
+  <div class="modal-overlay" id="gitDeployModal" style="display:none">
+    <div class="modal ports-modal" style="width: 640px; max-height: 90vh; overflow-y: auto;">
+      <div style="display:flex; align-items:center; justify-content:space-between;">
+        <h3 style="margin:0;">Deploy from GitHub</h3>
+        <button class="btn btn-sm btn-primary" id="btnGitAddApp" type="button">+ Add application</button>
+      </div>
+      <p style="color:var(--text-muted); font-size: 13px; margin: 8px 0 16px;">
+        Point at a GitHub repo with a Dockerfile. ContainerManager builds the image and
+        redeploys the container automatically when you push (via a GitHub webhook).
+      </p>
+
+      <!-- LIST VIEW -->
+      <div id="gitListView">
+        <div id="gitAppsList" class="mounts-list" style="display:flex; flex-direction:column; gap:10px;"></div>
+        <div id="gitAppsEmpty" style="display:none; color:var(--text-muted); font-size:13px; padding:16px 0;">
+          No applications yet. Click <b>Add application</b> to deploy your first GitHub repo.
+        </div>
+      </div>
+
+      <!-- FORM VIEW -->
+      <div id="gitFormView" style="display:none;">
+        <input type="hidden" id="gitEditId" />
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+          <div style="grid-column: span 2;">
+            <label style="font-size:12px; color:var(--text-muted);">GitHub repository URL *</label>
+            <input type="text" id="gitRepoUrl" class="modal-input" placeholder="https://github.com/user/repo" />
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted);">Application name</label>
+            <input type="text" id="gitName" class="modal-input" placeholder="(auto from repo)" />
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted);">Branch</label>
+            <input type="text" id="gitBranch" class="modal-input" placeholder="main" />
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted);">Build context (subdir)</label>
+            <input type="text" id="gitContext" class="modal-input" placeholder="." />
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted);">Dockerfile path</label>
+            <input type="text" id="gitDockerfile" class="modal-input" placeholder="Dockerfile" />
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted);">Container name</label>
+            <input type="text" id="gitContainerName" class="modal-input" placeholder="(auto)" />
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted);">Restart policy</label>
+            <select id="gitRestart" class="modal-input">
+              <option value="unless-stopped">unless-stopped</option>
+              <option value="always">always</option>
+              <option value="on-failure">on-failure</option>
+              <option value="no">no</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted);">Ports (host:container, comma sep)</label>
+            <input type="text" id="gitPorts" class="modal-input" placeholder="8080:80, 443:443" />
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted);">Network mode</label>
+            <input type="text" id="gitNetwork" class="modal-input" placeholder="bridge" />
+          </div>
+          <div style="grid-column: span 2;">
+            <label style="font-size:12px; color:var(--text-muted);">Environment (one KEY=VALUE per line)</label>
+            <textarea id="gitEnv" class="modal-input" rows="3" placeholder="NODE_ENV=production"></textarea>
+          </div>
+          <div style="grid-column: span 2;">
+            <label style="font-size:12px; color:var(--text-muted);">Volumes (one /host:/container per line)</label>
+            <textarea id="gitVolumes" class="modal-input" rows="2" placeholder="/srv/data:/app/data"></textarea>
+          </div>
+          <div style="grid-column: span 2;">
+            <label style="font-size:12px; color:var(--text-muted);">Private repo token (optional, GitHub PAT)</label>
+            <input type="password" id="gitToken" class="modal-input" placeholder="ghp_… (leave blank for public repos)" />
+          </div>
+          <label class="toggle-label" style="grid-column: span 2; justify-content:space-between; width:100%;">
+            <span>Auto-deploy on push (webhook)</span>
+            <label class="toggle-wrapper">
+              <input type="checkbox" id="gitAutoDeploy" checked />
+              <span class="toggle-switch"></span>
+            </label>
+          </label>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:16px;">
+          <button class="btn btn-ghost" id="btnGitFormCancel" type="button">Back</button>
+          <button class="btn btn-primary" id="btnGitFormSave" type="button">Save &amp; show webhook</button>
+        </div>
+      </div>
+
+      <!-- WEBHOOK INFO PANEL -->
+      <div id="gitWebhookPanel" style="display:none; margin-top:16px; border:1px solid var(--border); border-radius:8px; padding:12px;">
+        <h4 style="margin:0 0 8px;">GitHub webhook setup</h4>
+        <p style="font-size:12px; color:var(--text-muted); margin:0 0 10px;">
+          In your repo: <b>Settings → Webhooks → Add webhook</b>. Paste these, set content type to
+          <code>application/json</code>, choose <b>Just the push event</b>, and save.
+        </p>
+        <label style="font-size:11px; color:var(--text-muted);">Payload URL</label>
+        <div style="display:flex; gap:6px; margin-bottom:8px;">
+          <input type="text" id="gitWhUrl" class="modal-input" readonly />
+          <button class="btn btn-sm btn-secondary" type="button" onclick="copyText('gitWhUrl')">Copy</button>
+        </div>
+        <label style="font-size:11px; color:var(--text-muted);">Secret</label>
+        <div style="display:flex; gap:6px;">
+          <input type="text" id="gitWhSecret" class="modal-input" readonly />
+          <button class="btn btn-sm btn-secondary" type="button" onclick="copyText('gitWhSecret')">Copy</button>
+        </div>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:8px;">
+          The app must be reachable from GitHub (public URL / reverse proxy / tunnel) for webhooks to arrive.
+        </div>
+        <div style="display:flex; justify-content:flex-end; margin-top:12px;">
+          <button class="btn btn-ghost" id="btnGitWhDone" type="button">Done</button>
+        </div>
+      </div>
+
+      <!-- DEPLOY LOG PANEL -->
+      <div id="gitDeployPanel" style="display:none; margin-top:16px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+          <h4 style="margin:0;" id="gitDeployTitle">Deploying…</h4>
+          <span id="gitDeployStatus" style="font-size:12px; color:var(--text-muted);"></span>
+        </div>
+        <pre id="gitDeployLog" style="background:var(--bg-elev, #0d1117); color:#c9d1d9; font-size:12px; padding:10px; border-radius:6px; max-height:300px; overflow:auto; white-space:pre-wrap; margin:0;"></pre>
+        <div style="display:flex; justify-content:flex-end; margin-top:12px;">
+          <button class="btn btn-ghost" id="btnGitDeployClose" type="button">Close</button>
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:18px;" id="gitModalFooter">
+        <button class="btn btn-ghost" id="btnGitClose" type="button">Close</button>
       </div>
     </div>
   </div>

@@ -14,6 +14,7 @@
 | **Images** | Push local images to a registry with progress feedback |
 | **Updates** | Pull latest image and recreate the container |
 | **Auto-Update** | Watchtower-style scheduled image checks; auto-recreate containers on new images (opt-in, monitor-only, cleanup, label-aware) |
+| **Git Deploy** | Coolify-style deploy from a GitHub repo; build the Dockerfile and auto-redeploy on push via a GitHub webhook |
 | **Backups** | Full per-container or multi-select ZIP backups (image + writable layer + named volumes) with import/restore |
 | **App settings backup** | Export/import app settings as ZIP (`system`, notifications, monitoring, AI config) |
 | **Auth** | Cookie-based login (password from env / system config) |
@@ -133,6 +134,40 @@ services:
 
 **Precedence:** built-in defaults → environment variables → UI-saved JSON.
 
+## Git Deploy (deploy from GitHub on push)
+
+Inspired by [Coolify](https://github.com/coollabsio/coolify), you can point ContainerManager at a
+GitHub repository that contains a **Dockerfile**. It builds the image (the Docker daemon clones the
+remote git context) and runs it as a container — then **redeploys automatically when you push**, via
+a GitHub webhook.
+
+**Set it up** from the **Deploy** button in the header:
+
+1. **Add application** — enter the repo URL, branch, Dockerfile path / build context, and the
+   container's runtime config (ports, env, volumes, restart policy, network).
+   For **private repos**, paste a GitHub Personal Access Token (used only to clone).
+2. **Save** — you'll get a **webhook URL + secret**.
+3. In GitHub: **Settings → Webhooks → Add webhook**, paste the URL and secret, set content type to
+   `application/json`, choose **Just the push event**, and save.
+4. Push to the tracked branch → ContainerManager verifies the webhook signature (HMAC-SHA256),
+   rebuilds the image, and recreates the container. Use **Deploy** in the UI to trigger a build
+   manually and watch the live build log.
+
+| Field | Description |
+|-------|-------------|
+| **Repository URL** | `https://github.com/user/repo` (public, or private with a token) |
+| **Branch** | Branch to track and build (default `main`) |
+| **Build context / Dockerfile** | Subdir and Dockerfile path within the repo |
+| **Ports / Env / Volumes** | Runtime config applied to the deployed container |
+| **Auto-deploy on push** | Toggle webhook-triggered redeploys |
+
+**Reachability:** webhooks require the app to be reachable from GitHub — expose it via a public URL,
+reverse proxy, or tunnel. The webhook endpoint (`/webhook/git/<id>`) is authenticated by the HMAC
+signature, not the dashboard login. App definitions persist to `data/git_apps.json`.
+
+> **Note:** building images and cloning private repos via the Docker socket is privileged. Only add
+> repositories you trust, and keep the dashboard behind HTTPS/auth.
+
 ## Security notes
 
 - The stack needs access to **`/var/run/docker.sock`** — treat this as **highly privileged**.
@@ -151,11 +186,13 @@ ContainerManager/
 │   │   ├── containers.py    # CRUD, logs, exec WS, backup, deploy
 │   │   ├── system.py        # Host stats, MQTT/system config
 │   │   ├── images.py        # Registry push
+│   │   ├── git.py           # Git-deploy CRUD + GitHub push webhook
 │   │   └── ai.py            # AI gateway
 │   └── services/
 │       ├── docker_service.py
 │       ├── ha_mqtt.py
 │       ├── autoupdate_service.py # Watchtower-style scheduled image updates
+│       ├── git_service.py   # Coolify-style build-from-GitHub + deploy
 │       ├── monitoring_service.py
 │       ├── notification_service.py
 │       └── ai_gateway.py

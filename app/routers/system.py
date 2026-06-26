@@ -21,13 +21,14 @@ from app.services.ai_gateway import CONFIG_FILE as AI_CONFIG_FILE
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
-from app.config import AUTOUPDATE_CONFIG_FILE
+from app.config import AUTOUPDATE_CONFIG_FILE, GIT_APPS_FILE
 
 SETTINGS_FILES = {
     "system_config.json": SYSTEM_CONFIG_FILE,
     "notification_settings.json": NOTIFICATION_SETTINGS_FILE,
     "container_monitoring.json": CONTAINER_MONITORING_FILE,
     "autoupdate_config.json": AUTOUPDATE_CONFIG_FILE,
+    "git_apps.json": GIT_APPS_FILE,
     "ai_config.json": Path(AI_CONFIG_FILE),
 }
 

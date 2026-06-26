@@ -129,6 +129,9 @@ async def auth_middleware(request: Request, call_next):
     # Allow login page and auth endpoints without cookies
     if path.startswith("/api/auth") or path == "/login":
         return await call_next(request)
+    # GitHub push webhooks authenticate via HMAC signature, not the session cookie
+    if path.startswith("/webhook/git/"):
+        return await call_next(request)
     # WebSocket upgrade: check cookie from query param fallback
     if not _check_auth(request):
         if path.startswith("/api") or path.startswith("/ws"):
@@ -139,12 +142,14 @@ async def auth_middleware(request: Request, call_next):
 
 # ── Include routers ───────────────────────────────────────────────────────────
 
-from app.routers import images, ai
+from app.routers import images, ai, git
 
 app.include_router(containers.router)
 app.include_router(system.router)
 app.include_router(images.router)
 app.include_router(ai.router)
+app.include_router(git.router)
+app.include_router(git.webhook_router)
 
 # ── Action Routes (for notifications) ──────────────────────────────────────────
 
