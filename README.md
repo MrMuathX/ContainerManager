@@ -54,6 +54,13 @@ Environment variables are loaded from `.env` (see `.env.example`). Important opt
 | `HA_DISCOVERY_PREFIX` | Usually `homeassistant` |
 | `STATS_INTERVAL` | Seconds between MQTT state updates |
 | `APP_URL` | Base URL used for monitoring/notifications (match how you access the app) |
+| `AUTOUPDATE_ENABLED` | `true` to enable the Watchtower-style auto-updater |
+| `AUTOUPDATE_INTERVAL` | Poll interval in seconds (default `86400` = 24h) |
+| `AUTOUPDATE_SCOPE` | `opt-in` (only flagged containers) or `all` |
+| `AUTOUPDATE_MONITOR_ONLY` | `true` to check & notify only, never apply |
+| `AUTOUPDATE_CLEANUP` | `true` to remove old images after updating |
+| `AUTOUPDATE_NOTIFY` | `true` to send notifications on update events |
+| `AUTOUPDATE_RESPECT_LABELS` | `true` to honor `com.centurylinklabs.watchtower.*` labels |
 
 Additional settings (MQTT, AI keys, notifications) can be adjusted from the **System** and **AI** modals in the UI; persisted JSON lives under `data/` on the host (volume `./data:/app/data`).
 
@@ -97,6 +104,34 @@ labels:
 
 Only containers with an actual newer image are recreated, so enabling this is safe and
 idempotent. Settings persist to `data/autoupdate_config.json`.
+
+### Configure without the UI (docker-compose)
+
+The updater can be configured entirely from environment variables — no UI needed. Env vars
+set the **defaults**; if you later change settings in the UI, the saved JSON
+(`data/autoupdate_config.json`) takes precedence. Per-container opt-in still works via labels.
+
+```yaml
+services:
+  containermanager:
+    image: containermanager
+    environment:
+      AUTOUPDATE_ENABLED: "true"
+      AUTOUPDATE_INTERVAL: "86400"     # 24h
+      AUTOUPDATE_SCOPE: "opt-in"       # or "all"
+      AUTOUPDATE_CLEANUP: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/app/data
+
+  # An opted-in container, Watchtower-style:
+  myapp:
+    image: nginx:latest
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+```
+
+**Precedence:** built-in defaults → environment variables → UI-saved JSON.
 
 ## Security notes
 

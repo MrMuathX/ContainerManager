@@ -59,9 +59,42 @@ class Settings:
             except Exception as e:
                 print(f"Error loading container_monitoring.json: {e}")
 
-        # Load auto-update (Watchtower-style) config
+        # Load auto-update (Watchtower-style) config.
+        # Precedence: built-in defaults < environment variables < UI-saved JSON.
+        # This lets the updater be configured purely from docker-compose (no UI),
+        # while UI changes (persisted to JSON) still take precedence when present.
         from app.models import AutoUpdateSettings
-        self.autoupdate = AutoUpdateSettings()
+
+        def _env_bool(key: str, default: bool) -> bool:
+            val = os.getenv(key)
+            if val is None:
+                return default
+            return val.strip().lower() in ("1", "true", "yes", "on")
+
+        def _env_int(key: str, default: int) -> int:
+            val = os.getenv(key)
+            if val is None or not val.strip():
+                return default
+            try:
+                return int(val)
+            except ValueError:
+                return default
+
+        defaults = AutoUpdateSettings()
+        env_scope = (os.getenv("AUTOUPDATE_SCOPE") or defaults.scope).strip().lower()
+        if env_scope not in ("opt-in", "all"):
+            env_scope = defaults.scope
+        self.autoupdate = AutoUpdateSettings(
+            enabled=_env_bool("AUTOUPDATE_ENABLED", defaults.enabled),
+            interval_seconds=_env_int("AUTOUPDATE_INTERVAL", defaults.interval_seconds),
+            scope=env_scope,
+            monitor_only=_env_bool("AUTOUPDATE_MONITOR_ONLY", defaults.monitor_only),
+            cleanup=_env_bool("AUTOUPDATE_CLEANUP", defaults.cleanup),
+            notify=_env_bool("AUTOUPDATE_NOTIFY", defaults.notify),
+            respect_labels=_env_bool("AUTOUPDATE_RESPECT_LABELS", defaults.respect_labels),
+        )
+
+        # UI-saved JSON overrides env-derived defaults when it exists
         if AUTOUPDATE_CONFIG_FILE.exists():
             try:
                 data = json.loads(AUTOUPDATE_CONFIG_FILE.read_text())
