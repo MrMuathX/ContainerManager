@@ -42,6 +42,8 @@ def create_git_app(payload: GitApp):
 
 @router.put("/apps/{app_id}")
 def update_git_app(app_id: str, payload: GitApp):
+    if not payload.repo_url.strip():
+        raise HTTPException(status_code=400, detail="repo_url is required")
     # An empty private_token in the payload means "keep existing"
     existing = git_service.get_app(app_id)
     if not existing:

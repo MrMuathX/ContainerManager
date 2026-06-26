@@ -27,7 +27,8 @@ from app.config import settings, GIT_APPS_FILE
 from app.models import GitApp
 from app.services import docker_service
 
-_lock = threading.Lock()
+_lock = threading.Lock()              # guards _jobs
+_apps_lock = threading.RLock()        # guards settings.git_apps + git_apps.json writes
 _jobs: dict[str, dict[str, Any]] = {}  # deploy job registry (in-memory, streamed to UI)
 
 # Label applied to every container we deploy, so they can be identified later
@@ -45,6 +46,7 @@ def _client() -> docker.DockerClient:
 # ── Persistence / CRUD ────────────────────────────────────────────────────────
 
 def _save_all() -> None:
+    """Serialize git_apps to disk. Callers must hold _apps_lock."""
     os.makedirs(os.path.dirname(GIT_APPS_FILE), exist_ok=True)
     GIT_APPS_FILE.write_text(json.dumps(settings.git_apps, indent=2))
 
@@ -55,11 +57,14 @@ def slugify(value: str) -> str:
 
 
 def list_apps() -> list[dict]:
-    return list(settings.git_apps.values())
+    with _apps_lock:
+        return [dict(a) for a in settings.git_apps.values()]
 
 
 def get_app(app_id: str) -> Optional[dict]:
-    return settings.git_apps.get(app_id)
+    with _apps_lock:
+        app = settings.git_apps.get(app_id)
+        return dict(app) if app else None
 
 
 def _derive_name_from_repo(repo_url: str) -> str:
@@ -74,62 +79,66 @@ def create_app(data: GitApp) -> dict:
     if not app.get("name"):
         app["name"] = _derive_name_from_repo(app["repo_url"])
 
-    base_id = slugify(app.get("id") or app["name"])
-    app_id = base_id
-    suffix = 1
-    while app_id in settings.git_apps:
-        suffix += 1
-        app_id = f"{base_id}-{suffix}"
-    app["id"] = app_id
+    with _apps_lock:
+        base_id = slugify(app.get("id") or app["name"])
+        app_id = base_id
+        suffix = 1
+        while app_id in settings.git_apps:
+            suffix += 1
+            app_id = f"{base_id}-{suffix}"
+        app["id"] = app_id
 
-    if not app.get("container_name"):
-        app["container_name"] = app_id
-    if not app.get("image_name"):
-        app["image_name"] = f"cm-git/{app_id}:latest"
-    if not app.get("webhook_secret"):
-        app["webhook_secret"] = secrets.token_hex(20)
-    app["created_at"] = _now_iso()
-    app["last_deploy"] = None
+        if not app.get("container_name"):
+            app["container_name"] = app_id
+        if not app.get("image_name"):
+            app["image_name"] = f"cm-git/{app_id}:latest"
+        if not app.get("webhook_secret"):
+            app["webhook_secret"] = secrets.token_hex(20)
+        app["created_at"] = _now_iso()
+        app["last_deploy"] = None
 
-    settings.git_apps[app_id] = app
-    _save_all()
-    return app
+        settings.git_apps[app_id] = app
+        _save_all()
+    return dict(app)
 
 
 def update_app(app_id: str, data: GitApp) -> Optional[dict]:
-    existing = settings.git_apps.get(app_id)
-    if not existing:
-        return None
-    incoming = data.dict()
-    # Preserve server-managed fields
-    incoming["id"] = app_id
-    incoming["created_at"] = existing.get("created_at")
-    incoming["last_deploy"] = existing.get("last_deploy")
-    incoming["webhook_secret"] = existing.get("webhook_secret") or secrets.token_hex(20)
-    incoming["image_name"] = existing.get("image_name") or f"cm-git/{app_id}:latest"
-    if not incoming.get("container_name"):
-        incoming["container_name"] = existing.get("container_name") or app_id
-    if not incoming.get("name"):
-        incoming["name"] = existing.get("name") or _derive_name_from_repo(incoming["repo_url"])
-    settings.git_apps[app_id] = incoming
-    _save_all()
-    return incoming
+    with _apps_lock:
+        existing = settings.git_apps.get(app_id)
+        if not existing:
+            return None
+        incoming = data.dict()
+        # Preserve server-managed fields
+        incoming["id"] = app_id
+        incoming["created_at"] = existing.get("created_at")
+        incoming["last_deploy"] = existing.get("last_deploy")
+        incoming["webhook_secret"] = existing.get("webhook_secret") or secrets.token_hex(20)
+        incoming["image_name"] = existing.get("image_name") or f"cm-git/{app_id}:latest"
+        if not incoming.get("container_name"):
+            incoming["container_name"] = existing.get("container_name") or app_id
+        if not incoming.get("name"):
+            incoming["name"] = existing.get("name") or _derive_name_from_repo(incoming["repo_url"])
+        settings.git_apps[app_id] = incoming
+        _save_all()
+        return dict(incoming)
 
 
 def regenerate_secret(app_id: str) -> Optional[str]:
-    app = settings.git_apps.get(app_id)
-    if not app:
-        return None
-    app["webhook_secret"] = secrets.token_hex(20)
-    _save_all()
-    return app["webhook_secret"]
+    with _apps_lock:
+        app = settings.git_apps.get(app_id)
+        if not app:
+            return None
+        app["webhook_secret"] = secrets.token_hex(20)
+        _save_all()
+        return app["webhook_secret"]
 
 
 def delete_app(app_id: str, remove_container: bool = True) -> bool:
-    app = settings.git_apps.pop(app_id, None)
-    if app is None:
-        return False
-    _save_all()
+    with _apps_lock:
+        app = settings.git_apps.pop(app_id, None)
+        if app is None:
+            return False
+        _save_all()
     if remove_container:
         try:
             c = _client().containers.get(app["container_name"])
@@ -208,16 +217,17 @@ def _cleanup_old_jobs(max_age_sec: int = 3600) -> None:
 
 
 def _record_deploy_result(app_id: str, status: str, message: str, commit: Optional[str] = None) -> None:
-    app = settings.git_apps.get(app_id)
-    if not app:
-        return
-    app["last_deploy"] = {
-        "status": status,
-        "message": message,
-        "commit": commit,
-        "timestamp": _now_iso(),
-    }
-    _save_all()
+    with _apps_lock:
+        app = settings.git_apps.get(app_id)
+        if not app:
+            return
+        app["last_deploy"] = {
+            "status": status,
+            "message": message,
+            "commit": commit,
+            "timestamp": _now_iso(),
+        }
+        _save_all()
 
 
 def _do_build_and_deploy(app: dict, on_log: Callable[[str, str], None], commit: Optional[str]) -> dict:
@@ -262,17 +272,40 @@ def _do_build_and_deploy(app: dict, on_log: Callable[[str, str], None], commit: 
         raise RuntimeError(f"Build failed: {e}")
 
     on_log("Image built successfully", "info")
-
-    # 2. Replace the old container (if any), preserving the configured runtime
+    new_image_id = None
     try:
-        old = client.containers.get(container_name)
-        on_log(f"Stopping existing container {container_name}", "info")
-        old.stop(timeout=10)
-        old.remove(force=True)
-    except docker.errors.NotFound:
+        new_image_id = client.images.get(image_name).id
+    except Exception:
         pass
 
-    # Resolve ports: {"8080/tcp": "8080"} -> docker-py {"8080/tcp": "8080"}
+    # 2. Stage the swap so a failed start rolls back instead of leaving nothing
+    #    running: stop+rename the old container (freeing its ports/name), start
+    #    the new one, and only then remove the old one. On failure, restore it.
+    old = None
+    old_image_id = None
+    old_was_running = False
+    backup_name = f"{container_name}__cm_old"
+    try:
+        old = client.containers.get(container_name)
+        old_image_id = old.image.id if old.image else None
+        old_was_running = old.status == "running"
+    except docker.errors.NotFound:
+        old = None
+
+    if old is not None:
+        # Clear any leftover backup from a previously-failed deploy
+        try:
+            client.containers.get(backup_name).remove(force=True)
+        except docker.errors.NotFound:
+            pass
+        on_log(f"Stopping existing container {container_name}", "info")
+        try:
+            old.stop(timeout=10)
+        except Exception:
+            pass
+        old.rename(backup_name)
+
+    # Resolve ports: {"8080/tcp": "8080"} -> docker-py {"8080/tcp": [("0.0.0.0","8080")]}
     raw_ports = {}
     for cport, hport in (app.get("ports") or {}).items():
         key = cport if "/" in cport else f"{cport}/tcp"
@@ -282,24 +315,56 @@ def _do_build_and_deploy(app: dict, on_log: Callable[[str, str], None], commit: 
     labels = {LABEL_GIT_APP: app["id"]}
 
     on_log(f"Starting container {container_name}", "info")
-    new_container = client.containers.run(
-        image_name,
-        name=container_name,
-        detach=True,
-        environment=app.get("env") or [],
-        ports=resolved_ports,
-        volumes=app.get("volumes") or None,
-        restart_policy={"Name": app.get("restart_policy") or "unless-stopped"},
-        network_mode=app.get("network_mode") or "bridge",
-        labels=labels,
-    )
+    try:
+        new_container = client.containers.run(
+            image_name,
+            name=container_name,
+            detach=True,
+            environment=app.get("env") or [],
+            ports=resolved_ports,
+            volumes=app.get("volumes") or None,
+            restart_policy={"Name": app.get("restart_policy") or "unless-stopped"},
+            network_mode=app.get("network_mode") or "bridge",
+            labels=labels,
+        )
+    except Exception as run_err:
+        # Remove a partially-created new container so its name doesn't block retries
+        try:
+            client.containers.get(container_name).remove(force=True)
+        except docker.errors.NotFound:
+            pass
+        if old is not None:
+            on_log(f"Start failed ({run_err}); rolling back to previous container", "error")
+            try:
+                old.rename(container_name)
+                if old_was_running:
+                    old.start()
+                on_log("Rolled back to previous container", "info")
+            except Exception as rb_err:
+                on_log(f"Rollback failed: {rb_err}", "error")
+        raise RuntimeError(f"Container start failed: {run_err}")
+
+    # Success: drop the old container and prune its now-orphaned image
+    if old is not None:
+        try:
+            old.remove(force=True)
+        except Exception:
+            pass
+        if old_image_id and old_image_id != new_image_id:
+            try:
+                client.images.remove(old_image_id, force=False)
+                on_log("Removed previous (orphaned) image", "info")
+            except Exception:
+                pass
+
     on_log(f"Deployed {container_name} ({new_container.short_id})", "done")
     return {"container_id": new_container.id, "short_id": new_container.short_id}
 
 
 def start_deploy(app_id: str, commit: Optional[str] = None, trigger: str = "manual") -> Optional[str]:
     """Kick off a deploy in a background thread. Returns a job_id, or None if unknown app."""
-    app = settings.git_apps.get(app_id)
+    # Snapshot the config so an edit mid-deploy can't change the in-flight build
+    app = get_app(app_id)
     if not app:
         return None
 
@@ -352,7 +417,11 @@ def verify_signature(secret: str, payload: bytes, signature_header: Optional[str
 
 
 def ref_matches_branch(ref: Optional[str], branch: str) -> bool:
-    """A GitHub push 'ref' looks like 'refs/heads/main'."""
-    if not ref:
+    """
+    A GitHub push 'ref' looks like 'refs/heads/<branch>'. Match the tracked
+    branch exactly so tag pushes ('refs/tags/...') and other branches that
+    merely share a final path segment do not trigger a deploy.
+    """
+    if not ref or not branch:
         return False
-    return ref == f"refs/heads/{branch}" or ref.split("/")[-1] == branch
+    return ref == f"refs/heads/{branch}"

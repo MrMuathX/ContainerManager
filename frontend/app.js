@@ -1888,6 +1888,12 @@ window.copyText = (id) => {
 
 let gitDeployPollTimer = null;
 
+function gitEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function gitShowView(view) {
   document.getElementById('gitListView').style.display = view === 'list' ? '' : 'none';
   document.getElementById('gitFormView').style.display = view === 'form' ? '' : 'none';
@@ -1901,8 +1907,8 @@ function gitDeployBadge(last) {
   const color = last.status === 'success' ? 'var(--success,#3fb950)'
     : last.status === 'failed' ? 'var(--danger,#e5534b)' : 'var(--text-muted)';
   const when = last.timestamp ? new Date(last.timestamp).toLocaleString() : '';
-  const commit = last.commit ? ` (${last.commit})` : '';
-  return `<span style="color:${color}; font-size:11px;">${last.status}${commit} · ${when}</span>`;
+  const commit = last.commit ? ` (${gitEsc(last.commit)})` : '';
+  return `<span style="color:${color}; font-size:11px;">${gitEsc(last.status)}${commit} · ${gitEsc(when)}</span>`;
 }
 
 async function loadGitApps() {
@@ -1920,9 +1926,9 @@ async function loadGitApps() {
       row.innerHTML = `
         <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
           <div style="min-width:0;">
-            <div style="font-weight:600; overflow:hidden; text-overflow:ellipsis;">${app.name}</div>
+            <div style="font-weight:600; overflow:hidden; text-overflow:ellipsis;">${gitEsc(app.name)}</div>
             <div style="font-size:11px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis;">
-              ${app.repo_url} · ${app.branch}${app.auto_deploy ? ' · auto-deploy' : ''}
+              ${gitEsc(app.repo_url)} · ${gitEsc(app.branch)}${app.auto_deploy ? ' · auto-deploy' : ''}
             </div>
             <div>${gitDeployBadge(app.last_deploy)}</div>
           </div>
@@ -2011,10 +2017,17 @@ async function deleteGitApp(appId, name) {
   } catch (e) { toast('Delete failed: ' + e.message, 'error'); }
 }
 
+function stopGitPoll() {
+  if (gitDeployPollTimer) { clearInterval(gitDeployPollTimer); gitDeployPollTimer = null; }
+}
+
 async function deployGitApp(appId, name) {
+  stopGitPoll();
   gitShowView('deploy');
   document.getElementById('gitDeployTitle').textContent = `Deploying ${name || appId}…`;
-  document.getElementById('gitDeployStatus').textContent = 'running';
+  const statusEl = document.getElementById('gitDeployStatus');
+  statusEl.textContent = 'running';
+  statusEl.style.color = 'var(--text-muted)';
   const logEl = document.getElementById('gitDeployLog');
   logEl.textContent = '';
   try {
@@ -2064,13 +2077,13 @@ document.getElementById('btnGitDeploy').onclick = () => {
   document.getElementById('gitDeployModal').style.display = 'flex';
 };
 document.getElementById('btnGitClose').onclick = () => {
-  if (gitDeployPollTimer) { clearInterval(gitDeployPollTimer); gitDeployPollTimer = null; }
+  stopGitPoll();
   document.getElementById('gitDeployModal').style.display = 'none';
 };
-document.getElementById('btnGitAddApp').onclick = () => showGitForm(null);
-document.getElementById('btnGitFormCancel').onclick = () => { gitShowView('list'); loadGitApps(); };
-document.getElementById('btnGitWhDone').onclick = () => { gitShowView('list'); loadGitApps(); };
-document.getElementById('btnGitDeployClose').onclick = () => { gitShowView('list'); loadGitApps(); };
+document.getElementById('btnGitAddApp').onclick = () => { stopGitPoll(); showGitForm(null); };
+document.getElementById('btnGitFormCancel').onclick = () => { stopGitPoll(); gitShowView('list'); loadGitApps(); };
+document.getElementById('btnGitWhDone').onclick = () => { stopGitPoll(); gitShowView('list'); loadGitApps(); };
+document.getElementById('btnGitDeployClose').onclick = () => { stopGitPoll(); gitShowView('list'); loadGitApps(); };
 
 document.getElementById('btnGitFormSave').onclick = async () => {
   const payload = collectGitPayload();
